@@ -1,0 +1,28 @@
+.page {
+  padding-top: 24rpx;
+  padding-bottom: 24rpx;
+}
+.hero-card {
+  margin: 0 24rpx 20rpx;
+  padding: 40rpx 32rpx;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--blue), var(--sky));
+  box-shadow: var(--shadow);
+}
+.hero-num {
+  color: #fff;
+  font-size: 56rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.hero-text {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 24rpx;
+  margin-top: 6rpx;
+}
+.tool-icon-img {
+  width: 48rpx;
+  height: 48rpx;
+  display: block;
+  margin: 0 auto 10rpx;
+}

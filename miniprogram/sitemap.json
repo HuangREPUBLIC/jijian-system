@@ -1,0 +1,4 @@
+{
+  "desc": "内部员工工具，不对外搜索",
+  "rules": [{ "action": "disallow", "page": "*" }]
+}

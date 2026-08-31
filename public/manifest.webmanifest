@@ -1,0 +1,17 @@
+{
+  "name": "计件跟踪",
+  "short_name": "计件",
+  "description": "车间计件打点 · 工序考勤 · 完成百分比",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F2F2F7",
+  "theme_color": "#1C4E9D",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

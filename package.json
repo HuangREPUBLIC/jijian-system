@@ -1,0 +1,23 @@
+{
+  "name": "jijian-system",
+  "version": "1.0.0",
+  "description": "计件跟踪系统 — 微信小程序后端，车间计件工人打点/工序/考勤/完成百分比，跟「跟单系统」共用员工账号",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "test": "node test/run.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.2.0",
+    "mysql2": "^3.23.3"
+  },
+  "license": "UNLICENSED"
+}

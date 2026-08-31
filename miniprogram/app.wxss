@@ -1,0 +1,171 @@
+/* 设计语言跟「跟单系统」保持一致：白底 + 大韩航空品牌蓝点缀 + iOS 大圆角分组卡片
+   --blue 取自大韩航空 logo 文字深蓝，--sky 取自机身浅空蓝（非国旗太极蓝，品牌语义更贴切） */
+page {
+  --blue: #1C4E9D;
+  --sky: #71CBEB;
+  --sky-soft: #EAF7FC;
+  --bg: #F2F2F7;
+  --card: #FFFFFF;
+  --ink: #000000;
+  --ink-2: #8A8A8E;
+  --line: #E5E5EA;
+  --ok: #34C759;
+  --ok-soft: #E8F8EC;
+  --bad: #FF3B30;
+  --bad-soft: #FFECEB;
+  --warn: #FF9500;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.group-title {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 24rpx 32rpx 12rpx;
+}
+.card {
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  margin: 0 24rpx 24rpx;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 28rpx;
+  border-bottom: 1px solid var(--line);
+  transition: background-color 120ms ease-out;
+}
+.row-item:last-child {
+  border-bottom: none;
+}
+.row-item:active {
+  background-color: var(--bg);
+}
+.row-label {
+  color: var(--ink-2);
+  font-size: 14px;
+}
+.row-value {
+  color: var(--ink);
+  font-size: 15px;
+}
+.field {
+  display: block;
+  padding: 20rpx 28rpx;
+  border-bottom: 1px solid var(--line);
+}
+.field:last-child {
+  border-bottom: none;
+}
+.field-label {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-bottom: 8rpx;
+}
+.field-label .required {
+  color: var(--bad);
+  margin-left: 4rpx;
+}
+.field.invalid {
+  background: var(--bad-soft);
+}
+.field-error {
+  font-size: 12px;
+  color: var(--bad);
+  margin-top: 6rpx;
+}
+.input {
+  font-size: 15px;
+  color: var(--ink);
+  width: 100%;
+}
+.btn-primary {
+  background: var(--blue);
+  color: #fff;
+  border-radius: var(--radius);
+  font-size: 15px;
+  padding: 20rpx;
+  text-align: center;
+  margin: 24rpx;
+  transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1), opacity 150ms ease-out;
+}
+.btn-primary:active {
+  transform: scale(0.97);
+  opacity: 0.88;
+}
+.btn-ghost {
+  background: var(--sky-soft);
+  color: var(--blue);
+  border-radius: var(--radius);
+  font-size: 14px;
+  padding: 14rpx 20rpx;
+  text-align: center;
+  transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1), opacity 150ms ease-out;
+}
+.btn-ghost:active {
+  transform: scale(0.96);
+  opacity: 0.8;
+}
+.btn-danger {
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-radius: var(--radius);
+  font-size: 14px;
+  padding: 14rpx 20rpx;
+  text-align: center;
+  transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1), opacity 150ms ease-out;
+}
+.btn-danger:active {
+  transform: scale(0.96);
+  opacity: 0.8;
+}
+.tag {
+  font-size: 12px;
+  padding: 4rpx 14rpx;
+  border-radius: 99px;
+  background: var(--sky-soft);
+  color: var(--blue);
+}
+.tag.warn {
+  background: #FFF4E5;
+  color: var(--warn);
+}
+.empty {
+  text-align: center;
+  color: var(--ink-2);
+  font-size: 14px;
+  padding: 80rpx 0;
+}
+.tools-grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 16rpx;
+}
+.tool-item {
+  width: 33.33%;
+  box-sizing: border-box;
+  padding: 12rpx;
+}
+.tool-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 32rpx 0;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.tool-item:active .tool-card {
+  transform: scale(0.95);
+}
+.tool-card-label {
+  font-size: 13px;
+  color: var(--ink);
+  margin-top: 8rpx;
+}

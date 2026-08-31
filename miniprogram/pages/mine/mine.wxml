@@ -1,0 +1,20 @@
+<view class="page">
+  <view class="mine-header" wx:if="{{user}}">
+    <view class="mine-avatar">{{isAdmin ? '管理' : '员工'}}</view>
+    <view class="mine-name">{{user.name}}</view>
+    <view class="mine-company">天津锦利国际贸易有限公司</view>
+  </view>
+
+  <view class="card" wx:if="{{user}}">
+    <view class="row-item">
+      <view class="row-label">职位</view>
+      <view class="row-value">{{user.roleLabel || (isAdmin ? '管理员' : '员工')}}</view>
+    </view>
+    <view class="row-item">
+      <view class="row-label">手机</view>
+      <view class="row-value">{{user.phone}}</view>
+    </view>
+  </view>
+
+  <view class="mine-logout" bindtap="logout">退出登录</view>
+</view>

@@ -1,0 +1,75 @@
+<view class="page">
+  <view class="hero-card">
+    <view class="hero-num">{{todayCount}}</view>
+    <view class="hero-text">今天完成件数，继续加油</view>
+  </view>
+
+  <view class="card" wx:if="{{user}}">
+    <view class="row-item">
+      <view>
+        <view class="row-value">{{user.name}}</view>
+        <view class="row-label">{{user.phone}}</view>
+      </view>
+      <text class="tag">{{user.roleLabel || (isAdmin ? '管理员' : '员工')}}</text>
+    </view>
+  </view>
+
+  <view class="group-title">工具</view>
+  <view class="tools-grid">
+    <view class="tool-item" wx:if="{{isManager}}" bindtap="goEmployees">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.employees}}" mode="aspectFit" />
+        <text class="tool-card-label">员工管理</text>
+        <view wx:if="{{pendingCount > 0}}" class="tag warn" style="margin-top:8rpx;display:inline-block">{{pendingCount}} 待审批</view>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goProcesses">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.processes}}" mode="aspectFit" />
+        <text class="tool-card-label">工序模板</text>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goStyles">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.styles}}" mode="aspectFit" />
+        <text class="tool-card-label">款式管理</text>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goAttendance">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.attendance}}" mode="aspectFit" />
+        <text class="tool-card-label">考勤录入</text>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goEfficiency">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.efficiency}}" mode="aspectFit" />
+        <text class="tool-card-label">效率看板</text>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goCutting">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.cutting}}" mode="aspectFit" />
+        <text class="tool-card-label">生产管理</text>
+      </view>
+    </view>
+    <view class="tool-item" wx:if="{{isManager}}" bindtap="goPayroll">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.payroll}}" mode="aspectFit" />
+        <text class="tool-card-label">薪资管理</text>
+      </view>
+    </view>
+    <view class="tool-item" bindtap="goScanlog">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.scanlog}}" mode="aspectFit" />
+        <text class="tool-card-label">扫菲记录</text>
+      </view>
+    </view>
+    <view class="tool-item" wx:if="{{isManager}}" bindtap="goOperations">
+      <view class="tool-card">
+        <image class="tool-icon-img" src="{{icons.operations}}" mode="aspectFit" />
+        <text class="tool-card-label">操作记录</text>
+      </view>
+    </view>
+  </view>
+</view>

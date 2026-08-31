@@ -1,0 +1,49 @@
+.page {
+  padding-top: 24rpx;
+  padding-bottom: 24rpx;
+}
+.summary-bar {
+  display: flex;
+  margin: 0 24rpx 24rpx;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.summary-item {
+  flex: 1;
+  text-align: center;
+  padding: 24rpx 0;
+}
+.summary-item:first-child {
+  border-right: 1px solid var(--line);
+}
+.summary-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--blue);
+  line-height: 1.3;
+}
+.summary-label {
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-top: 4rpx;
+}
+.row-left {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+.row-seq {
+  flex: none;
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 50%;
+  background: var(--sky-soft);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -1,0 +1,127 @@
+<view class="page">
+  <view class="card" wx:if="{{!showForm}}">
+    <view class="row-item" wx:for="{{styles}}" wx:key="id" bindtap="editItem" data-item="{{item}}">
+      <view style="display:flex;align-items:center;gap:16rpx">
+        <image wx:if="{{item.image}}" class="style-thumb" src="{{item.image}}" mode="aspectFill" catchtap="previewImage" data-urls="{{item.imagesList}}" data-current="{{item.image}}" />
+        <view>
+          <view class="row-value">{{item.name}}<block wx:if="{{item.code}}"> · {{item.code}}</block></view>
+          <view class="row-label">
+            <block wx:if="{{item.size}}">{{item.size}} </block>
+            <block wx:if="{{item.color}}">{{item.color}} </block>
+            <block wx:if="{{item.customer}}">{{item.customer}}</block>
+          </view>
+        </view>
+      </view>
+      <view class="btn-danger" catchtap="remove" data-id="{{item.id}}">删除</view>
+    </view>
+    <view wx:if="{{styles.length === 0}}" class="empty">还没有款式</view>
+  </view>
+  <view class="btn-primary" wx:if="{{!showForm}}" bindtap="toggleForm">新增款式</view>
+
+  <block wx:if="{{showForm}}">
+    <view class="sum-bar">
+      <view class="sum-item"><view class="sum-num">{{totalPrice}}</view><view class="sum-label">默认工价合计</view></view>
+      <view class="sum-item"><view class="sum-num">{{totalCount}}</view><view class="sum-label">工序数量合计</view></view>
+    </view>
+
+    <view class="group-title">基础信息</view>
+    <view class="card">
+      <view class="field">
+        <view class="field-label">款式图片</view>
+        <view style="display:flex;flex-wrap:wrap;gap:16rpx;margin-top:8rpx">
+          <view wx:for="{{images}}" wx:key="*this" style="position:relative;width:160rpx;height:160rpx">
+            <image src="{{item}}" mode="aspectFill" style="width:160rpx;height:160rpx;border-radius:12rpx" catchtap="previewImage" data-urls="{{images}}" data-current="{{item}}" />
+            <view catchtap="removeImageAt" data-index="{{index}}" style="position:absolute;top:-12rpx;right:-12rpx;width:40rpx;height:40rpx;line-height:38rpx;text-align:center;background:#e64340;color:#fff;border-radius:50%;font-size:26rpx">✕</view>
+          </view>
+          <view class="img-picker" bindtap="chooseImage" style="width:160rpx;height:160rpx">
+            <text class="img-picker-plus">+</text>
+            <text class="img-picker-text">添加图片</text>
+          </view>
+        </view>
+      </view>
+      <view class="field {{codeError ? 'invalid' : ''}}">
+        <view class="field-label">款号<text class="required">*</text></view>
+        <input class="input" placeholder="请输入款号" value="{{code}}" bindinput="onCode" />
+        <view class="field-error" wx:if="{{codeError}}">{{codeError}}</view>
+      </view>
+      <view class="field {{nameError ? 'invalid' : ''}}">
+        <view class="field-label">款式名称<text class="required">*</text></view>
+        <input class="input" placeholder="请输入款式名称" value="{{name}}" bindinput="onName" />
+        <view class="field-error" wx:if="{{nameError}}">{{nameError}}</view>
+      </view>
+      <view class="field">
+        <view class="field-label-row">
+          <view class="field-label">款式尺码（可多选）</view>
+          <text class="add-option" data-type="size" bindtap="addOption">+ 新增</text>
+        </view>
+        <view style="display:flex;flex-wrap:wrap;gap:4rpx;margin-top:8rpx">
+          <view wx:for="{{sizes}}" wx:key="*this" data-value="{{item}}" bindtap="toggleSize"
+            style="padding:12rpx 28rpx;margin:6rpx;border-radius:999rpx;border:1rpx solid {{sizeSelMap[item] ? '#123B6D' : '#d0d7e2'}};background:{{sizeSelMap[item] ? '#123B6D' : '#f2f5f9'}};color:{{sizeSelMap[item] ? '#fff' : '#333'}}">{{item}}</view>
+          <view wx:if="{{sizes.length === 0}}" class="row-label">还没有尺码，点右上"+新增"</view>
+        </view>
+      </view>
+      <view class="field">
+        <view class="field-label-row">
+          <view class="field-label">款式颜色（可多选）</view>
+          <text class="add-option" data-type="color" bindtap="addOption">+ 新增</text>
+        </view>
+        <view style="display:flex;flex-wrap:wrap;gap:4rpx;margin-top:8rpx">
+          <view wx:for="{{colors}}" wx:key="*this" data-value="{{item}}" bindtap="toggleColor"
+            style="padding:12rpx 28rpx;margin:6rpx;border-radius:999rpx;border:1rpx solid {{colorSelMap[item] ? '#123B6D' : '#d0d7e2'}};background:{{colorSelMap[item] ? '#123B6D' : '#f2f5f9'}};color:{{colorSelMap[item] ? '#fff' : '#333'}}">{{item}}</view>
+          <view wx:if="{{colors.length === 0}}" class="row-label">还没有颜色，点右上"+新增"</view>
+        </view>
+      </view>
+      <view class="field">
+        <view class="field-label-row">
+          <view class="field-label">客户名称</view>
+          <text class="add-option" data-type="customer" bindtap="addOption">+ 新增</text>
+        </view>
+        <picker range="{{customers}}" value="{{customerIndex}}" bindchange="onCustomerChange">
+          <view class="row-value">{{customer || '请选择客户'}}</view>
+        </picker>
+      </view>
+    </view>
+
+    <view class="group-title">生产工序</view>
+    <view class="card">
+      <block wx:for="{{styleProcesses}}" wx:key="id">
+        <view class="row-item">
+          <view>
+            <view class="row-value">{{item.process_name}}</view>
+            <view class="row-label">工价 {{item.effectivePrice}} 元{{item.unit_price === null ? '（默认）' : '（已改价）'}}</view>
+          </view>
+          <view style="display:flex;gap:12rpx">
+            <view class="btn-ghost" bindtap="editProcessPrice" data-item="{{item}}">改价</view>
+            <view class="btn-danger" bindtap="removeProcess" data-item="{{item}}">删除</view>
+          </view>
+        </view>
+        <view class="emp-expand" wx:if="{{editingSpId === item.id}}">
+          <view class="field">
+            <view class="field-label">工价（留空则用工序模板默认价）</view>
+            <input class="input" type="digit" value="{{editSpPrice}}" bindinput="onEditSpPrice" />
+          </view>
+          <view class="btn-primary" bindtap="saveProcessPrice">保存</view>
+        </view>
+      </block>
+      <view wx:if="{{styleProcesses.length === 0}}" class="empty">还没有添加工序</view>
+    </view>
+    <view class="btn-ghost" style="margin:0 24rpx 24rpx;text-align:center;padding:20rpx" bindtap="toggleAddProcess">{{showAddProcess ? '取消添加' : '+ 添加工序'}}</view>
+
+    <view class="card" wx:if="{{showAddProcess}}">
+      <view class="field">
+        <view class="field-label">选择工序</view>
+        <picker range="{{processOptions}}" range-key="name" value="{{addProcessIndex}}" bindchange="onAddProcessChange">
+          <view class="row-value">{{processOptions[addProcessIndex].name || '还没有工序模板'}}</view>
+        </picker>
+      </view>
+      <view class="field">
+        <view class="field-label">工价（选填，留空用模板默认价 {{processOptions[addProcessIndex].unit_price || 0}} 元）</view>
+        <input class="input" type="digit" placeholder="留空 = 用默认价" value="{{addProcessPrice}}" bindinput="onAddProcessPrice" />
+      </view>
+    </view>
+    <view class="btn-primary" wx:if="{{showAddProcess}}" bindtap="confirmAddProcess">确认添加工序</view>
+
+    <view class="btn-primary" bindtap="submit">提交</view>
+    <view class="btn-ghost" style="margin:0 24rpx 24rpx;text-align:center;padding:20rpx" bindtap="toggleForm">取消</view>
+  </block>
+</view>

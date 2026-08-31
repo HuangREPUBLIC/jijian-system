@@ -1,0 +1,7 @@
+node_modules
+miniprogram
+test
+.git
+.env
+*.md
+npm-debug.log

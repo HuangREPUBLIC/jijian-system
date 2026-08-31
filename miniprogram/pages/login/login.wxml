@@ -1,0 +1,33 @@
+<view class="page">
+  <view class="hero">
+    <text class="hero-title">计件跟踪</text>
+  </view>
+
+  <view wx:if="{{loading}}" class="empty">正在登录…</view>
+
+  <block wx:elif="{{needJoin}}">
+    <view wx:if="{{!submitted}}" class="card">
+      <view class="field">
+        <view class="field-label">姓名</view>
+        <input class="input" placeholder="请输入姓名" value="{{name}}" bindinput="onNameInput" />
+      </view>
+      <view class="field">
+        <view class="field-label">手机号</view>
+        <input class="input" type="number" placeholder="请输入手机号" value="{{phone}}" bindinput="onPhoneInput" />
+      </view>
+    </view>
+    <view wx:if="{{!submitted}}" class="btn-primary" bindtap="submitJoin">申请加入</view>
+
+    <view wx:if="{{submitted}}" class="card">
+      <view class="row-item" style="display:block;text-align:center;padding:48rpx 28rpx">
+        <text class="row-value">已提交申请，等待管理员审批</text>
+      </view>
+    </view>
+    <view wx:if="{{submitted}}" class="btn-ghost" style="margin:0 24rpx" bindtap="checkApproved">刷新审批状态</view>
+  </block>
+
+  <block wx:else>
+    <view class="empty">{{errorMsg}}</view>
+    <view class="btn-primary" bindtap="tryLogin">重新登录</view>
+  </block>
+</view>

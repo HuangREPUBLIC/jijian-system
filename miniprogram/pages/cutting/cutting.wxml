@@ -1,0 +1,66 @@
+<view class="page">
+  <view class="hero">
+    <view class="hero-tabs">
+      <view class="hero-tab {{range==='today' ? 'active' : ''}}" bindtap="switchRange" data-range="today">今日</view>
+      <view class="hero-tab {{range==='yesterday' ? 'active' : ''}}" bindtap="switchRange" data-range="yesterday">昨日</view>
+      <view class="hero-tab {{range==='month' ? 'active' : ''}}" bindtap="switchRange" data-range="month">本月</view>
+    </view>
+    <view class="hero-label">已完成件数</view>
+    <view class="hero-value">{{overview.completed}}</view>
+    <view class="hero-sub">当前生产中件数 {{overview.inProduction}} 件</view>
+  </view>
+
+  <view class="group-title">生产明细</view>
+  <view class="tabs">
+    <view class="tab-item {{tab==='sheet' ? 'active' : ''}}" bindtap="switchTab" data-tab="sheet">按裁床单看</view>
+    <view class="tab-item {{tab==='style' ? 'active' : ''}}" bindtap="switchTab" data-tab="style">按款看</view>
+  </view>
+  <view class="search-bar">
+    <image class="search-icon" src="{{icons.search}}" />
+    <input class="search-input" placeholder="搜索款号/款名" value="{{keyword}}" bindinput="onSearch" confirm-type="search" />
+  </view>
+
+  <block wx:if="{{tab==='sheet'}}">
+    <view class="card">
+      <view class="row-item" wx:for="{{sheets}}" wx:key="id">
+        <view>
+          <view class="row-value">{{item.style_name}} × {{item.qty}}</view>
+          <view class="row-label">该款已完成 {{item.style_completed}} 件<block wx:if="{{item.note}}"> · {{item.note}}</block></view>
+        </view>
+        <view class="btn-danger" bindtap="remove" data-id="{{item.id}}">删除</view>
+      </view>
+      <view wx:if="{{sheets.length === 0}}" class="empty">还没有裁床单</view>
+    </view>
+  </block>
+  <block wx:else>
+    <view class="card">
+      <view class="row-item" wx:for="{{byStyle}}" wx:key="style_id">
+        <view>
+          <view class="row-value">{{item.style_name}}<block wx:if="{{item.style_code}}"> ({{item.style_code}})</block></view>
+          <view class="row-label">裁床 {{item.total_qty}} 件 · 已完成 {{item.completed_qty}} 件 · {{item.sheet_count}} 张裁床单</view>
+        </view>
+      </view>
+      <view wx:if="{{byStyle.length === 0}}" class="empty">暂无数据</view>
+    </view>
+  </block>
+
+  <view class="btn-primary" bindtap="toggleForm">{{showForm ? '取消' : '新增裁床单'}}</view>
+
+  <view class="card" wx:if="{{showForm}}">
+    <view class="field">
+      <view class="field-label">款式</view>
+      <picker range="{{styles}}" range-key="name" value="{{styleIndex}}" bindchange="onStyleChange">
+        <view class="row-value">{{styles[styleIndex].name || '还没有款式'}}</view>
+      </picker>
+    </view>
+    <view class="field">
+      <view class="field-label">数量</view>
+      <input class="input" type="digit" value="{{qty}}" bindinput="onQty" />
+    </view>
+    <view class="field">
+      <view class="field-label">备注（选填）</view>
+      <input class="input" value="{{note}}" bindinput="onNote" />
+    </view>
+  </view>
+  <view class="btn-primary" wx:if="{{showForm}}" bindtap="submit">保存</view>
+</view>

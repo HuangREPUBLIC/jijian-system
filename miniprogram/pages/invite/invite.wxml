@@ -1,0 +1,12 @@
+<view class="page">
+  <view class="card">
+    <view class="badge">
+      <image class="badge-icon" src="{{icons.employees}}" />
+    </view>
+    <view class="company-name">{{companyName}}</view>
+    <view class="hint">使用「计件跟踪」，管理更高效，邀请同事加入团队</view>
+  </view>
+
+  <button class="btn-primary invite-btn" open-type="share">邀请员工</button>
+  <view class="tip">点击后可直接转发给微信好友或群聊，对方打开链接即可提交入职申请，等待你审批</view>
+</view>

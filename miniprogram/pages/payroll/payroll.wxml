@@ -1,0 +1,48 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <view class="field-label">月份</view>
+      <picker mode="date" fields="month" value="{{month}}" bindchange="onMonthChange">
+        <view class="row-value">{{month}}</view>
+      </picker>
+    </view>
+  </view>
+
+  <block wx:if="{{isAdmin}}">
+    <view class="card">
+      <block wx:for="{{list}}" wx:key="userId">
+        <view class="row-item" bindtap="editRow" data-item="{{item}}">
+          <view>
+            <view class="row-value">{{item.name}}</view>
+            <view class="row-label">计件 {{item.pieceWage}} · 餐补 {{item.mealSubsidy}} · 扣罚 {{item.penalty}} · 奖金 {{item.bonus}}</view>
+          </view>
+          <text class="tag">{{item.total}} 元</text>
+        </view>
+        <view class="field" wx:if="{{editingUserId === item.userId}}">
+          <view class="field-label">餐补</view>
+          <input class="input" type="digit" value="{{mealSubsidy}}" bindinput="onMeal" />
+        </view>
+        <view class="field" wx:if="{{editingUserId === item.userId}}">
+          <view class="field-label">扣罚</view>
+          <input class="input" type="digit" value="{{penalty}}" bindinput="onPenalty" />
+        </view>
+        <view class="field" wx:if="{{editingUserId === item.userId}}">
+          <view class="field-label">奖金</view>
+          <input class="input" type="digit" value="{{bonus}}" bindinput="onBonus" />
+        </view>
+        <view class="btn-primary" wx:if="{{editingUserId === item.userId}}" bindtap="saveAdjust">保存</view>
+      </block>
+      <view wx:if="{{list.length === 0}}" class="empty">这个月还没有数据</view>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="card" wx:if="{{mine}}">
+      <view class="row-item"><view class="row-label">计件工资</view><view class="row-value">{{mine.pieceWage}} 元</view></view>
+      <view class="row-item"><view class="row-label">餐补</view><view class="row-value">{{mine.mealSubsidy}} 元</view></view>
+      <view class="row-item"><view class="row-label">扣罚</view><view class="row-value">{{mine.penalty}} 元</view></view>
+      <view class="row-item"><view class="row-label">奖金</view><view class="row-value">{{mine.bonus}} 元</view></view>
+      <view class="row-item"><view class="row-label">合计</view><text class="tag">{{mine.total}} 元</text></view>
+    </view>
+  </block>
+</view>

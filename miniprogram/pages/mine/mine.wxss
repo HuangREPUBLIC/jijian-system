@@ -1,0 +1,44 @@
+.page {
+  padding-top: 48rpx;
+  padding-bottom: 24rpx;
+}
+.mine-header {
+  text-align: center;
+  padding: 0 24rpx 40rpx;
+}
+.mine-avatar {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 50%;
+  background: var(--sky-soft);
+  color: var(--blue);
+  font-size: 28rpx;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16rpx;
+}
+.mine-name {
+  font-size: 34rpx;
+  font-weight: 700;
+}
+.mine-company {
+  font-size: 24rpx;
+  color: var(--ink-2);
+  margin-top: 6rpx;
+}
+.mine-logout {
+  margin: 48rpx 24rpx;
+  padding: 24rpx;
+  text-align: center;
+  background: var(--card);
+  color: var(--bad);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease-out;
+}
+.mine-logout:active {
+  transform: scale(0.98);
+  background-color: var(--bad-soft);
+}

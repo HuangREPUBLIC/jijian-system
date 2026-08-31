@@ -1,0 +1,39 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/index/index",
+    "pages/employees/employees",
+    "pages/invite/invite",
+    "pages/processes/processes",
+    "pages/styles/styles",
+    "pages/scan/scan",
+    "pages/attendance/attendance",
+    "pages/efficiency/efficiency",
+    "pages/cutting/cutting",
+    "pages/payroll/payroll",
+    "pages/scanlog/scanlog",
+    "pages/operations/operations",
+    "pages/mine/mine"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#1C4E9D",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "计件跟踪",
+    "backgroundColor": "#F2F2F7",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#8A8A8E",
+    "selectedColor": "#1C4E9D",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "工作台", "iconPath": "images/tab-home.png", "selectedIconPath": "images/tab-home-active.png" },
+      { "pagePath": "pages/scan/scan", "text": "打点", "iconPath": "images/tab-scan.png", "selectedIconPath": "images/tab-scan-active.png" },
+      { "pagePath": "pages/mine/mine", "text": "我的", "iconPath": "images/tab-mine.png", "selectedIconPath": "images/tab-mine-active.png" }
+    ]
+  },
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "style": "v2"
+}

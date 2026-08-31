@@ -1,0 +1,92 @@
+<view class="page">
+  <view class="tabs">
+    <view class="tab-item {{tab==='list' ? 'active' : ''}}" bindtap="switchTab" data-tab="list">员工列表</view>
+    <view class="tab-item {{tab==='pending' ? 'active' : ''}}" bindtap="switchTab" data-tab="pending">
+      待审批{{requests.length > 0 ? '(' + requests.length + ')' : ''}}
+    </view>
+  </view>
+  <view class="btn-ghost invite-entry" bindtap="goInvite">邀请员工</view>
+
+  <block wx:if="{{tab==='list'}}">
+    <view class="search-bar">
+      <image class="search-icon" src="{{icons.search}}" />
+      <input class="search-input" placeholder="搜索姓名" value="{{keyword}}" bindinput="onSearch" confirm-type="search" />
+    </view>
+    <view class="emp-card" wx:for="{{users}}" wx:key="id">
+      <view class="emp-head">
+        <view class="emp-avatar">{{item.initials}}</view>
+        <view class="emp-head-info">
+          <view class="row-value">{{item.name}}</view>
+          <view class="row-label">{{item.dateText}}</view>
+        </view>
+      </view>
+      <view class="emp-meta">
+        <view class="emp-meta-item">
+          <view class="field-label">岗位</view>
+          <view class="row-value">{{item.roleLabel}}</view>
+        </view>
+        <view class="emp-meta-item">
+          <view class="field-label">手机号</view>
+          <view class="row-value">{{item.phone}}</view>
+        </view>
+      </view>
+      <view class="emp-actions">
+        <view class="btn-ghost" bindtap="openEdit" data-item="{{item}}">编辑</view>
+        <view class="btn-ghost" bindtap="openRole" data-item="{{item}}">设置岗位</view>
+        <view class="btn-danger" bindtap="removeUser" data-id="{{item.id}}">离职</view>
+      </view>
+
+      <view class="emp-expand" wx:if="{{expandedId === item.id && expandMode === 'edit'}}">
+        <view class="field">
+          <view class="field-label">姓名</view>
+          <input class="input" value="{{editName}}" bindinput="onEditName" />
+        </view>
+        <view class="field">
+          <view class="field-label">手机号</view>
+          <input class="input" value="{{editPhone}}" bindinput="onEditPhone" />
+        </view>
+        <view class="btn-primary" bindtap="saveEdit">保存</view>
+      </view>
+
+      <view class="emp-expand" wx:if="{{expandedId === item.id && expandMode === 'role'}}">
+        <view class="field">
+          <view class="field-label">选择岗位</view>
+          <picker range="{{roles}}" range-key="label" value="{{roleIndex}}" bindchange="onRoleChange">
+            <view class="row-value">{{roles[roleIndex].label || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="btn-primary" bindtap="saveRole">保存</view>
+      </view>
+    </view>
+    <view wx:if="{{users.length === 0}}" class="empty card">还没有员工</view>
+
+    <view class="btn-primary" bindtap="toggleAdd">{{showAdd ? '取消' : '手动添加员工'}}</view>
+    <view class="card" wx:if="{{showAdd}}">
+      <view class="field">
+        <view class="field-label">姓名</view>
+        <input class="input" value="{{name}}" bindinput="onNameInput" />
+      </view>
+      <view class="field">
+        <view class="field-label">手机号</view>
+        <input class="input" type="number" value="{{phone}}" bindinput="onPhoneInput" />
+      </view>
+    </view>
+    <view class="btn-primary" wx:if="{{showAdd}}" bindtap="submitAdd">确认添加</view>
+  </block>
+
+  <block wx:else>
+    <view class="card">
+      <view class="row-item" wx:for="{{requests}}" wx:key="id" style="align-items:center">
+        <view>
+          <view class="row-value">{{item.name}}</view>
+          <view class="row-label">{{item.phone}} · 扫码申请</view>
+        </view>
+        <view style="display:flex;gap:16rpx">
+          <view class="btn-ghost" bindtap="approve" data-id="{{item.id}}">通过</view>
+          <view class="btn-danger" bindtap="reject" data-id="{{item.id}}">拒绝</view>
+        </view>
+      </view>
+      <view wx:if="{{requests.length === 0}}" class="empty">暂无待审批申请</view>
+    </view>
+  </block>
+</view>

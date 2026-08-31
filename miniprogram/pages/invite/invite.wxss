@@ -1,0 +1,47 @@
+.page {
+  padding: 40rpx 24rpx;
+}
+.card {
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 60rpx 40rpx;
+  text-align: center;
+  margin-bottom: 40rpx;
+}
+.badge {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 50%;
+  background: var(--sky-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 32rpx;
+}
+.badge-icon {
+  width: 64rpx;
+  height: 64rpx;
+}
+.company-name {
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 12rpx;
+}
+.hint {
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+.invite-btn {
+  margin: 0 24rpx;
+}
+.tip {
+  margin-top: 24rpx;
+  padding: 0 40rpx;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.6;
+}

@@ -1,0 +1,9 @@
+.hero {
+  padding: 96rpx 0 48rpx;
+  text-align: center;
+}
+.hero-title {
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--blue);
+}

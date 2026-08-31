@@ -1,0 +1,19 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <view class="field-label">日期</view>
+      <picker mode="date" value="{{date}}" bindchange="onDateChange">
+        <view class="row-value">{{date}}</view>
+      </picker>
+    </view>
+  </view>
+  <view class="card">
+    <view class="row-item" wx:for="{{records}}" wx:key="id">
+      <view>
+        <view class="row-value">{{item.user_name}}</view>
+        <view class="row-label">{{item.process_name}} · {{item.qty}} 件</view>
+      </view>
+    </view>
+    <view wx:if="{{records.length === 0}}" class="empty">这天还没有打点记录</view>
+  </view>
+</view>

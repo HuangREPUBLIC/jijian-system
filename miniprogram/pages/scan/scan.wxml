@@ -1,0 +1,47 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <view class="field-label">日期</view>
+      <picker mode="date" value="{{date}}" bindchange="onDateChange">
+        <view class="row-value">{{date}}</view>
+      </picker>
+    </view>
+    <view class="field">
+      <view class="field-label">工序</view>
+      <picker range="{{processes}}" range-key="name" value="{{processIndex}}" bindchange="onProcessChange">
+        <view class="row-value">{{processes[processIndex].name || '请先添加工序模板'}}</view>
+      </picker>
+    </view>
+    <view class="field" wx:if="{{styles.length > 0}}">
+      <view class="field-label">款式（选填）</view>
+      <picker range="{{styles}}" range-key="name" value="{{styleIndex}}" bindchange="onStyleChange">
+        <view class="row-value">{{styles[styleIndex].name || '不选'}}</view>
+      </picker>
+    </view>
+    <view class="field">
+      <view class="field-label">完成数量</view>
+      <input class="input" type="digit" value="{{qty}}" bindinput="onQty" />
+    </view>
+  </view>
+  <view class="btn-primary" bindtap="submit">提交打点</view>
+
+  <view class="card" style="margin-top:24rpx">
+    <view class="row-item">
+      <view class="row-label">今日完成度</view>
+      <text wx:if="{{percent !== null}}" class="tag {{percent >= 1 ? '' : 'warn'}}">{{percentText}}</text>
+      <text wx:else class="row-value">暂无考勤数据</text>
+    </view>
+  </view>
+
+  <view class="group-title">今日打点记录</view>
+  <view class="card">
+    <view class="row-item" wx:for="{{records}}" wx:key="id">
+      <view>
+        <view class="row-value">{{item.processName}}</view>
+        <view class="row-label">{{item.qty}} 件</view>
+      </view>
+      <view class="btn-danger" bindtap="removeRecord" data-id="{{item.id}}">删除</view>
+    </view>
+    <view wx:if="{{records.length === 0}}" class="empty">今天还没有打点记录</view>
+  </view>
+</view>

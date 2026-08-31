@@ -1,0 +1,20 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <view class="field-label">月份</view>
+      <picker mode="date" fields="month" value="{{month}}" bindchange="onMonthChange">
+        <view class="row-value">{{month}}</view>
+      </picker>
+    </view>
+  </view>
+  <view class="card">
+    <view class="row-item" wx:for="{{list}}" wx:key="userId">
+      <view>
+        <view class="row-value">{{item.name}}</view>
+        <view class="row-label">出勤 {{item.attendanceHours}} 小时 · 时效 {{item.effectiveHoursText}} 小时</view>
+      </view>
+      <text class="tag {{item.percent !== null && item.percent < 1 ? 'warn' : ''}}">{{item.percentText}}</text>
+    </view>
+    <view wx:if="{{list.length === 0}}" class="empty">这个月还没有数据</view>
+  </view>
+</view>

@@ -1,0 +1,30 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <view class="field-label">员工</view>
+      <picker range="{{users}}" range-key="name" value="{{userIndex}}" bindchange="onUserChange">
+        <view class="row-value">{{users[userIndex].name || '还没有员工'}}</view>
+      </picker>
+    </view>
+    <view class="field">
+      <view class="field-label">日期</view>
+      <picker mode="date" value="{{date}}" bindchange="onDateChange">
+        <view class="row-value">{{date}}</view>
+      </picker>
+    </view>
+    <view class="field">
+      <view class="field-label">出勤小时</view>
+      <input class="input" type="digit" value="{{hours}}" bindinput="onHours" />
+    </view>
+  </view>
+  <view class="btn-primary" bindtap="submit">保存考勤</view>
+
+  <view class="group-title">本月考勤</view>
+  <view class="card">
+    <view class="row-item" wx:for="{{records}}" wx:key="id">
+      <view class="row-label">{{item.date}}</view>
+      <view class="row-value">{{item.hours}} 小时</view>
+    </view>
+    <view wx:if="{{records.length === 0}}" class="empty">这个月还没有考勤记录</view>
+  </view>
+</view>

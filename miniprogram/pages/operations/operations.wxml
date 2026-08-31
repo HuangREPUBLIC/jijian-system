@@ -1,0 +1,11 @@
+<view class="page">
+  <view class="card">
+    <view class="row-item" wx:for="{{logs}}" wx:key="id">
+      <view>
+        <view class="row-value">{{item.action}}</view>
+        <view class="row-label">{{item.user_name || '系统'}} · {{item.timeText}}</view>
+      </view>
+    </view>
+    <view wx:if="{{logs.length === 0}}" class="empty">还没有操作记录</view>
+  </view>
+</view>

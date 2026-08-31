@@ -1,0 +1,105 @@
+.page {
+  padding-top: 24rpx;
+  padding-bottom: 24rpx;
+}
+.tabs {
+  display: flex;
+  margin: 0 24rpx 24rpx;
+  background: var(--card);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.tab-item {
+  flex: 1;
+  text-align: center;
+  padding: 20rpx 0;
+  font-size: 14px;
+  color: var(--ink-2);
+  transition: opacity 120ms ease-out;
+}
+.tab-item.active {
+  color: #fff;
+  background: var(--blue);
+}
+.tab-item:active {
+  opacity: 0.7;
+}
+
+.invite-entry {
+  margin: 0 24rpx 20rpx;
+  text-align: center;
+}
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin: 0 24rpx 20rpx;
+  height: 76rpx;
+  padding: 0 26rpx;
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+.search-icon {
+  flex: none;
+  width: 32rpx;
+  height: 32rpx;
+}
+.search-input {
+  flex: 1;
+  height: 100%;
+  font-size: 14px;
+  background: transparent;
+}
+.emp-card {
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  margin: 0 24rpx 20rpx;
+  padding: 24rpx;
+  box-shadow: var(--shadow);
+}
+.emp-head {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+.emp-avatar {
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 50%;
+  background: var(--sky-soft);
+  color: var(--blue);
+  font-size: 24rpx;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.emp-head-info {
+  flex: 1;
+}
+.emp-meta {
+  display: flex;
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1px solid var(--line);
+}
+.emp-meta-item {
+  flex: 1;
+}
+.emp-actions {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 20rpx;
+}
+.emp-actions .btn-ghost,
+.emp-actions .btn-danger {
+  flex: 1;
+  text-align: center;
+}
+.emp-expand {
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1px solid var(--line);
+}

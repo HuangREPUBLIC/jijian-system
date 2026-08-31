@@ -1,0 +1,91 @@
+.page {
+  padding-top: 24rpx;
+  padding-bottom: 24rpx;
+}
+.hero {
+  margin: 0 24rpx 32rpx;
+  padding: 32rpx 32rpx 28rpx;
+  border-radius: var(--radius-lg);
+  background: var(--blue);
+  color: #fff;
+}
+.hero-tabs {
+  display: flex;
+  gap: 12rpx;
+  margin-bottom: 28rpx;
+}
+.hero-tab {
+  font-size: 13px;
+  padding: 8rpx 22rpx;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.6);
+  transition: opacity 120ms ease-out;
+}
+.hero-tab.active {
+  color: var(--blue);
+  background: #fff;
+}
+.hero-tab:active {
+  opacity: 0.7;
+}
+.hero-label {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 8rpx;
+}
+.hero-value {
+  font-size: 56px;
+  font-weight: 600;
+  line-height: 1.1;
+  margin-bottom: 24rpx;
+}
+.hero-sub {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+  padding-top: 20rpx;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+}
+.tabs {
+  display: flex;
+  margin: 0 24rpx 20rpx;
+  background: var(--card);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.tab-item {
+  flex: 1;
+  text-align: center;
+  padding: 20rpx 0;
+  font-size: 14px;
+  color: var(--ink-2);
+  transition: opacity 120ms ease-out;
+}
+.tab-item.active {
+  color: #fff;
+  background: var(--blue);
+}
+.tab-item:active {
+  opacity: 0.7;
+}
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin: 0 24rpx 24rpx;
+  height: 76rpx;
+  padding: 0 26rpx;
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+.search-icon {
+  flex: none;
+  width: 32rpx;
+  height: 32rpx;
+}
+.search-input {
+  flex: 1;
+  height: 100%;
+  font-size: 14px;
+  background: transparent;
+}
