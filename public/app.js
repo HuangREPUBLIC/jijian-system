@@ -78,6 +78,22 @@ function fmtNotifTime(ms) {
   const d = new Date(ms), p = n => String(n).padStart(2, "0");
   return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+// 通知条目：actorName/targetLabel/what 都在时用"头像+姓名+对象胶囊+改动说明"的卡片式展示；
+// 老通知(升级前生成的)这几列是 NULL，退回最初的纯文本单行展示，不强行拼凑。
+// 铃铛下拉/通知整页/首页"最近动态"预览三处共用同一套结构，desk=true 用更紧凑的字号。
+function notifItemHtml(n, desk) {
+  const rich = !!(n.actorName && n.targetLabel && n.what);
+  const cls = `notif-item${desk ? " desk" : ""}${n.read ? "" : " unread"}`;
+  const initials = s => (s || "").length > 2 ? s.slice(-2) : (s || "");
+  return `<div class="${cls}" onclick="A.openNotif('${n.id}','${n.link || ""}')">
+    ${rich ? `<span class="avatar sm">${esc(initials(n.actorName))}</span>` : ""}
+    <div class="notif-main">${rich ? `
+      <div class="notif-top"><span class="notif-actor">${esc(n.actorName)}</span><span class="tag">${esc(n.targetLabel)}</span></div>
+      <div class="notif-what">${esc(n.what)}</div>` : `
+      <div class="notif-plain">${esc(n.text)}</div>`}
+      <div class="notif-time">${fmtNotifTime(n.createdAt)}</div>
+    </div></div>`;
+}
 const num = n => Math.round(Number(n || 0) * 100) / 100;
 const pctText = p => (p === null || p === undefined) ? "" : Math.round(p * 1000) / 10 + "%";
 function toast(s, sticky) {
@@ -127,7 +143,9 @@ const ICONS = {
   home: `<path d="M4 10.5 12 4l8 6.5"/><path d="M6 10v9.2a.8.8 0 0 0 .8.8h10.4a.8.8 0 0 0 .8-.8V10"/>`,
   scan: `<path d="M4 8V5.3A1.3 1.3 0 015.3 4H8M20 8V5.3A1.3 1.3 0 0018.7 4H16M4 16v2.7A1.3 1.3 0 005.3 20H8M20 16v2.7a1.3 1.3 0 01-1.3 1.3H16"/><path d="M8 12h8"/>`,
   mine: `<circle cx="12" cy="8" r="3.6"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/>`,
-  bell: `<path d="M6 9.5a6 6 0 0 1 12 0c0 4 1.4 5.6 1.4 5.6H4.6S6 13.5 6 9.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/>`
+  bell: `<path d="M6 9.5a6 6 0 0 1 12 0c0 4 1.4 5.6 1.4 5.6H4.6S6 13.5 6 9.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/>`,
+  plus: `<path d="M12 5v14M5 12h14"/>`,
+  gear: `<circle cx="12" cy="12" r="3"/><path d="M19.4 14a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H4a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H10a1.6 1.6 0 0 0 1-1.5V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V10a1.6 1.6 0 0 0 1.5 1H20a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>`
 };
 const icon = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k]}</svg>`;
@@ -528,10 +546,8 @@ function deskNotifOverlayHtml() {
     <div class="dbell-panel">
       <div class="dbell-panel-head"><span>通知</span>${list.some(x => !x.read)
         ? `<a href="javascript:void(0)" onclick="event.stopPropagation();A.markAllNotifRead()">全部已读</a>` : ""}</div>
-      <div class="dbell-panel-list">${list.length ? list.map(x => `
-        <div class="dbell-item${x.read ? "" : " unread"}" onclick="A.openNotif('${x.id}','${x.link || ""}')">
-          <div class="dbell-text">${esc(x.text)}</div><div class="dbell-time">${fmtNotifTime(x.createdAt)}</div>
-        </div>`).join("") : `<div class="empty" style="padding:24px 16px">暂无通知</div>`}</div>
+      <div class="dbell-panel-list">${list.length ? list.map(x => notifItemHtml(x, true)).join("")
+        : `<div class="empty" style="padding:24px 16px">暂无通知</div>`}</div>
     </div>`;
 }
 function render() {
@@ -609,10 +625,7 @@ function homeStatsHtml() {
     </section>
     <section class="group home-desk-only">
       <div class="group-title">最近动态</div>
-      <div class="card">${recent.length ? recent.map(x => `
-        <div class="row-item" style="cursor:pointer" onclick="A.openNotif('${x.id}','${x.link || ""}')">
-          <div class="row-main"><div class="row-label">${esc(x.text)}</div><div class="row-sub">${fmtNotifTime(x.createdAt)}</div></div>
-        </div>`).join("") : `<div class="empty">暂无动态</div>`}</div>
+      <div class="card">${recent.length ? recent.map(x => notifItemHtml(x, false)).join("") : `<div class="empty">暂无动态</div>`}</div>
     </section>`;
   }
   const d = state.home.emp;
@@ -781,13 +794,19 @@ function vStyleForm() {
       <label class="field"><span>款式名称<span class="req">*</span></span>
         <input class="in ${f.err.name ? "bad" : ""}" id="sf-name" value="${esc(f.name)}" placeholder="请输入款式名称">
         ${f.err.name ? `<div class="field-err">${esc(f.err.name)}</div>` : ""}</label>
-      <div class="field"><span>款式尺码（可多选）<button class="act-btn ghost" style="float:right" onclick="A.addStyleOption('size')">+ 新增</button></span>
+      <div class="field"><span><span class="opt-label-ic">${icon("styles")}</span>款式尺码（可多选）<span class="opt-acts">
+          <button class="icn-btn" onclick="A.manageStyleOptions('size')" aria-label="管理尺码" title="管理">${icon("gear")}</button>
+          <button class="icn-btn" onclick="A.addStyleOption('size')" aria-label="新增尺码" title="新增">${icon("plus")}</button></span></span>
         <div class="chips">${o.sizes.length ? o.sizes.map(s => chip("size", s, !!f.size[s])).join("")
-      : `<span class="row-sub">还没有尺码，点右上"+ 新增"</span>`}</div></div>
-      <div class="field"><span>款式颜色（可多选）<button class="act-btn ghost" style="float:right" onclick="A.addStyleOption('color')">+ 新增</button></span>
+      : `<span class="row-sub">还没有尺码，点右上角新增</span>`}</div></div>
+      <div class="field"><span><span class="opt-label-ic">${icon("processes")}</span>款式颜色（可多选）<span class="opt-acts">
+          <button class="icn-btn" onclick="A.manageStyleOptions('color')" aria-label="管理颜色" title="管理">${icon("gear")}</button>
+          <button class="icn-btn" onclick="A.addStyleOption('color')" aria-label="新增颜色" title="新增">${icon("plus")}</button></span></span>
         <div class="chips">${o.colors.length ? o.colors.map(c => chip("color", c, !!f.color[c])).join("")
-      : `<span class="row-sub">还没有颜色，点右上"+ 新增"</span>`}</div></div>
-      <label class="field"><span>客户名称<button class="act-btn ghost" style="float:right" onclick="A.addStyleOption('customer')">+ 新增</button></span>
+      : `<span class="row-sub">还没有颜色，点右上角新增</span>`}</div></div>
+      <label class="field"><span><span class="opt-label-ic">${icon("employees")}</span>客户名称<span class="opt-acts">
+          <button class="icn-btn" onclick="A.manageStyleOptions('customer')" aria-label="管理客户" title="管理">${icon("gear")}</button>
+          <button class="icn-btn" onclick="A.addStyleOption('customer')" aria-label="新增客户" title="新增">${icon("plus")}</button></span></span>
         ${selectHtml("sf-customer", o.customers.map(c => [c, c]), f.customer, "", "请选择客户")}</label>
     </div>
   </section>
@@ -999,10 +1018,7 @@ function vNotifs() {
   return `<section class="group">
     <div class="card-pad" style="display:flex;justify-content:flex-end">${list.some(x => !x.read)
       ? `<a href="javascript:void(0)" onclick="A.markAllNotifRead()">全部已读</a>` : ""}</div>
-    <div class="card">${list.length ? list.map(x => `
-      <div class="row-item"${x.read ? "" : ' style="background:var(--sky-soft)"'} onclick="A.openNotif('${x.id}','${x.link || ""}')">
-        <div class="row-main"><div class="row-label">${esc(x.text)}</div><div class="row-sub">${fmtNotifTime(x.createdAt)}</div></div>
-      </div>`).join("") : `<div class="empty">暂无通知</div>`}</div>
+    <div class="card">${list.length ? list.map(x => notifItemHtml(x, false)).join("") : `<div class="empty">暂无通知</div>`}</div>
   </section>`;
 }
 function vMine() {
@@ -1298,6 +1314,33 @@ const A = {
     const map = type === "size" ? styleForm.size : styleForm.color;
     if (map[v]) delete map[v]; else map[v] = true;
     render();
+  },
+  manageStyleOptions(type) {
+    const titles = { size: "管理尺码", color: "管理颜色", customer: "管理客户" };
+    const listKey = { size: "sizes", color: "colors", customer: "customers" }[type];
+    const list = ((state.styleOptions || {})[listKey]) || [];
+    const html = list.length
+      ? list.map(v => `<div class="row-item"><div class="row-main"><div class="row-label">${esc(v)}</div></div>
+          <button class="act-btn danger ghost" onclick="A.deleteStyleOption('${type}','${encodeURIComponent(v)}')">删除</button></div>`).join("")
+      : `<div class="empty">还没有可管理的选项</div>`;
+    modal({ title: titles[type], html: `<div class="card" style="margin-top:0">${html}</div>`, okText: "完成", onOk: () => true });
+  },
+  async deleteStyleOption(type, encV) {
+    const value = decodeURIComponent(encV);
+    try {
+      await api("DELETE", "/style-options", { type, value });
+      const o = await api("GET", "/style-options");
+      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      // 编辑中的款式表单如果选中了这个刚被删掉的值，一并清掉，避免留下一个选不到的"幽灵"选中态
+      if (styleForm) {
+        if (type === "size") delete styleForm.size[value];
+        else if (type === "color") delete styleForm.color[value];
+        else if (type === "customer" && styleForm.customer === value) styleForm.customer = "";
+      }
+      render();                    // 刷新表单底下的尺码/颜色 chips(不然删完了那颗 chip 还留在原地)
+      A.manageStyleOptions(type);  // 弹窗内容也跟着刷新
+      toast("已删除");
+    } catch (e) { toast((e && e.error) || "删除失败"); }
   },
   addStyleOption(type) {
     const titles = { size: "新增尺码", color: "新增颜色", customer: "新增客户" };

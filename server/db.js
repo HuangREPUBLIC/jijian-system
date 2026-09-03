@@ -338,6 +338,18 @@ async function init() {
     await pool.query("ALTER TABLE jj_styles ADD COLUMN images MEDIUMTEXT");
     console.log("[migrate] jj_styles 增加 images 列（多图）");
   }
+  // 2d. 迁移：jj_notifications 增加结构化字段(谁/改了哪个对象/具体改了什么)，供前端做更精致的
+  // 通知卡片展示；老通知这几列会是 NULL，前端会退回纯文本 text 展示
+  const [actorCol] = await pool.query(
+    "SELECT 1 AS x FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='jj_notifications' AND COLUMN_NAME='actor_name'",
+    [CONF.database]
+  );
+  if (!actorCol[0]) {
+    await pool.query("ALTER TABLE jj_notifications ADD COLUMN actor_name VARCHAR(64)");
+    await pool.query("ALTER TABLE jj_notifications ADD COLUMN target_label VARCHAR(128)");
+    await pool.query("ALTER TABLE jj_notifications ADD COLUMN what VARCHAR(500)");
+    console.log("[migrate] jj_notifications 增加 actor_name/target_label/what 列");
+  }
   // 3. 一次性导入 daka 员工（仅生产）
   if (process.env.NODE_ENV !== "test") await importDakaSeed();
   // 4. 种子管理员

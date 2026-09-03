@@ -25,22 +25,43 @@ async function logOp(userId, action) {
 }
 
 // 应用内通知：写失败不影响主流程，全部包在 try 里；不通知操作者自己
-async function notifyUsers(userIds, text, link, excludeUserId) {
+// meta 是可选的结构化字段(actorName/targetLabel/what)，给前端拼"头像+姓名+对象胶囊+改动说明"
+// 的卡片式展示用；不传就是 null，老式调用点(不需要这套展示)不用改
+async function notifyUsers(userIds, text, link, excludeUserId, meta) {
   try {
     const targets = [...new Set((userIds || []).filter((id) => id && id !== excludeUserId))];
     for (const uid_ of targets) {
-      await db.prepare("INSERT INTO jj_notifications(id,user_id,text,link,created_at,read_at) VALUES(?,?,?,?,?,NULL)")
-        .run(uid(), uid_, text, link || null, Date.now());
+      await db.prepare("INSERT INTO jj_notifications(id,user_id,text,link,created_at,read_at,actor_name,target_label,what) VALUES(?,?,?,?,?,NULL,?,?,?)")
+        .run(uid(), uid_, text, link || null, Date.now(),
+          meta ? meta.actorName : null, meta ? meta.targetLabel : null, meta ? meta.what : null);
     }
   } catch (e) { console.error("[notify] 写通知失败", e); }
 }
 // 通知所有管理员/主管(款式/工序/裁床单这类共享主数据被改动时，让其他管理层知道)，不通知操作者自己
-async function notifyManagers(text, link, excludeUserId) {
+async function notifyManagers(text, link, excludeUserId, meta) {
   try {
     const rows = await db.prepare("SELECT id, role FROM users WHERE deleted = 0").all();
     const mgrIds = rows.filter((u) => A.isManager(u)).map((u) => u.id);
-    await notifyUsers(mgrIds, text, link, excludeUserId);
+    await notifyUsers(mgrIds, text, link, excludeUserId, meta);
   } catch (e) { console.error("[notify] 通知管理员失败", e); }
+}
+// 字段被改动时通知里"改成了 XX"这句该怎么拼：只改一个字段就带上新值；改了好几个字段就把
+// 字段名都列出来(超过3个截断+总数)，不再统一说一句看不出改了啥的"修改了XX"。
+// skipValueKeys 给图片这类不适合塞进一句话通知的字段用，只报字段名不带值。
+const PROCESS_FIELD_LABELS = { name: "工序名", unit: "计量单位", stdQty: "标准定额", hourQuota: "小时定额", unitPrice: "单价" };
+const STYLE_FIELD_LABELS = { name: "款式名称", code: "款号", image: "封面图", images: "款式图片", size: "尺码", color: "颜色", customer: "客户" };
+const PAYROLL_FIELD_LABELS = { mealSubsidy: "餐补", penalty: "扣罚", bonus: "奖金" };
+function changeWhat(labels, body, skipValueKeys) {
+  const changedKeys = Object.keys(labels).filter((k) => body[k] !== undefined);
+  if (!changedKeys.length) return null;
+  if (changedKeys.length === 1) {
+    const k = changedKeys[0], v = body[k];
+    if ((skipValueKeys || []).includes(k)) return `修改了「${labels[k]}」`;
+    if (v === null || String(v).trim() === "") return `把「${labels[k]}」改成了（清空）`;
+    return `把「${labels[k]}」改成了${v}`;
+  }
+  const names = changedKeys.map((k) => labels[k]);
+  return names.length > 3 ? `修改了「${names.slice(0, 3).join("、")}」等${names.length}项` : `修改了「${names.join("、")}」`;
 }
 
 // 职位显示名：跟单系统自己的角色(业务员/下厂员/主管等)存在 settings.roles 里，
@@ -261,14 +282,17 @@ router.post("/processes", A.authRequired, async (req, res) => {
 router.patch("/processes/:id", A.authRequired, async (req, res) => {
   const p = await db.prepare("SELECT * FROM jj_processes WHERE id=?").get(req.params.id);
   if (!p || p.deleted) return res.status(404).json({ error: "工序不存在" });
-  const { name, unit, stdQty, hourQuota, unitPrice } = req.body || {};
+  const body = req.body || {};
+  const { name, unit, stdQty, hourQuota, unitPrice } = body;
   if (name !== undefined) await db.prepare("UPDATE jj_processes SET name=? WHERE id=?").run(String(name).trim(), p.id);
   if (unit !== undefined) await db.prepare("UPDATE jj_processes SET unit=? WHERE id=?").run(unit, p.id);
   if (stdQty !== undefined) await db.prepare("UPDATE jj_processes SET std_qty=? WHERE id=?").run(Number(stdQty), p.id);
   if (hourQuota !== undefined) await db.prepare("UPDATE jj_processes SET hour_quota=? WHERE id=?").run(Number(hourQuota), p.id);
   if (unitPrice !== undefined) await db.prepare("UPDATE jj_processes SET unit_price=? WHERE id=?").run(Number(unitPrice), p.id);
   await logOp(req.user.id, `修改工序模板：${p.name}`);
-  await notifyManagers(`${req.user.name} 修改了工序模板「${p.name}」`, "/processes", req.user.id);
+  const what = changeWhat(PROCESS_FIELD_LABELS, body) || `修改了工序模板「${p.name}」`;
+  await notifyManagers(`${req.user.name} 在「${p.name}」${what}`, "/processes", req.user.id,
+    { actorName: req.user.name, targetLabel: p.name, what });
   res.json({ process: await db.prepare("SELECT * FROM jj_processes WHERE id=?").get(p.id) });
 });
 router.delete("/processes/:id", A.authRequired, async (req, res) => {
@@ -300,7 +324,8 @@ router.post("/styles", A.authRequired, async (req, res) => {
 router.patch("/styles/:id", A.authRequired, async (req, res) => {
   const s = await db.prepare("SELECT * FROM jj_styles WHERE id=?").get(req.params.id);
   if (!s || s.deleted) return res.status(404).json({ error: "款式不存在" });
-  const { name, code, image, images, size, color, customer } = req.body || {};
+  const body = req.body || {};
+  const { name, code, image, images, size, color, customer } = body;
   if (name !== undefined) await db.prepare("UPDATE jj_styles SET name=? WHERE id=?").run(String(name).trim(), s.id);
   if (code !== undefined) await db.prepare("UPDATE jj_styles SET code=? WHERE id=?").run(String(code).trim(), s.id);
   if (image !== undefined) await db.prepare("UPDATE jj_styles SET image=? WHERE id=?").run(image, s.id);
@@ -312,7 +337,9 @@ router.patch("/styles/:id", A.authRequired, async (req, res) => {
   if (color !== undefined) await db.prepare("UPDATE jj_styles SET color=? WHERE id=?").run(color, s.id);
   if (customer !== undefined) await db.prepare("UPDATE jj_styles SET customer=? WHERE id=?").run(customer, s.id);
   await logOp(req.user.id, `修改款式：${s.name}`);
-  await notifyManagers(`${req.user.name} 修改了款式「${s.name}」`, "/styles", req.user.id);
+  const what = changeWhat(STYLE_FIELD_LABELS, body, ["image", "images"]) || `修改了款式「${s.name}」`;
+  await notifyManagers(`${req.user.name} 在「${s.name}」${what}`, "/styles", req.user.id,
+    { actorName: req.user.name, targetLabel: s.name, what });
   res.json({ style: await db.prepare("SELECT * FROM jj_styles WHERE id=?").get(s.id) });
 });
 router.delete("/styles/:id", A.authRequired, async (req, res) => {
@@ -546,16 +573,35 @@ router.get("/payroll/summary", A.authRequired, A.managerRequired, async (req, re
   res.json({ month, list });
 });
 
+// 2026-06 -> "6月"，通知里的胶囊标签用，跟 fmtMonth(年月都带) 是两个格式，这里更短
+function monthChip(m) {
+  const mm = String(m).match(/^(\d{4})-(\d{1,2})$/);
+  return mm ? `${+mm[2]}月薪资` : `${m}薪资`;
+}
 router.post("/payroll/adjustments", A.authRequired, A.managerRequired, async (req, res) => {
   const { userId, month, mealSubsidy, penalty, bonus, note } = req.body || {};
   if (!userId || !month) return res.status(400).json({ error: "缺少员工/月份" });
+  const old = await db.prepare("SELECT * FROM jj_payroll_adjustments WHERE user_id=? AND month=?").get(userId, month);
+  const newVals = { mealSubsidy: Number(mealSubsidy) || 0, penalty: Number(penalty) || 0, bonus: Number(bonus) || 0 };
+  const oldVals = { mealSubsidy: old ? old.meal_subsidy : 0, penalty: old ? old.penalty : 0, bonus: old ? old.bonus : 0 };
   const id = uid();
   await db.prepare(`INSERT INTO jj_payroll_adjustments(id,user_id,month,meal_subsidy,penalty,bonus,note,created_at)
     VALUES(?,?,?,?,?,?,?,?)
     ON DUPLICATE KEY UPDATE meal_subsidy=VALUES(meal_subsidy), penalty=VALUES(penalty), bonus=VALUES(bonus), note=VALUES(note)`)
-    .run(id, userId, month, Number(mealSubsidy) || 0, Number(penalty) || 0, Number(bonus) || 0, note || null, Date.now());
+    .run(id, userId, month, newVals.mealSubsidy, newVals.penalty, newVals.bonus, note || null, Date.now());
   await logOp(req.user.id, `调整 ${month} 薪资项：员工 ${userId}`);
-  await notifyUsers([userId], `${req.user.name} 调整了你 ${month} 的薪资项(餐补/扣罚/奖金)`, "/payroll", req.user.id);
+  // 只报实际变了的那几项，不再每次都笼统列出"餐补/扣罚/奖金"三个名字，不管到底动没动
+  const changedKeys = Object.keys(PAYROLL_FIELD_LABELS).filter((k) => newVals[k] !== oldVals[k]);
+  let what;
+  if (!changedKeys.length) what = "调整了你的薪资项(数值未变)";
+  else if (changedKeys.length === 1) what = `把「${PAYROLL_FIELD_LABELS[changedKeys[0]]}」改成了${newVals[changedKeys[0]]}元`;
+  else {
+    const names = changedKeys.map((k) => PAYROLL_FIELD_LABELS[k]);
+    what = names.length > 3 ? `修改了「${names.slice(0, 3).join("、")}」等${names.length}项` : `修改了「${names.join("、")}」`;
+  }
+  const targetLabel = monthChip(month);
+  await notifyUsers([userId], `${req.user.name} 在你${targetLabel}里${what}`, "/payroll", req.user.id,
+    { actorName: req.user.name, targetLabel, what });
   res.json(Object.assign({ month, userId }, await payrollFor(userId, month)));
 });
 
@@ -673,7 +719,12 @@ const NOTIF_LIMIT = 50;   // 只给最近 50 条，够用又不会让列表无�
 router.get("/notifications", A.authRequired, async (req, res) => {
   const rows = await db.prepare(`SELECT * FROM jj_notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ${NOTIF_LIMIT}`)
     .all(req.user.id);
-  res.json({ list: rows.map((r) => ({ id: r.id, text: r.text, link: r.link, createdAt: r.created_at, read: !!r.read_at })) });
+  // actorName/targetLabel/what 是给更精致的通知卡片用的结构化字段；老通知这几列可能是 NULL，
+  // 前端遇到 NULL 时会退回纯文本 text 展示，这里原样传，不用兜底成空字符串
+  res.json({ list: rows.map((r) => ({
+    id: r.id, text: r.text, link: r.link, createdAt: r.created_at, read: !!r.read_at,
+    actorName: r.actor_name, targetLabel: r.target_label, what: r.what
+  })) });
 });
 // 未读总数(给红点轮询用)
 router.get("/notifications/unread-count", A.authRequired, async (req, res) => {
