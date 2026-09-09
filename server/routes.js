@@ -716,6 +716,65 @@ router.delete("/process-templates/:id", A.authRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------------- 同步工序：把款式当前工序推到指定的几张裁床单 ---------------- */
+// 裁床单的工序是下单时的快照，改款式工序默认不影响已建的单（否则改一次价会追溯改掉
+// 所有历史单算出来的工资）。要生效必须在这里显式选单同步。
+router.get("/styles/:id/syncable-orders", A.authRequired, A.managerRequired, async (req, res) => {
+  const rows = await db.prepare(`
+    SELECT o.id, o.bed_no, o.doc_no, o.cut_date, o.total_qty,
+           (SELECT COUNT(*) FROM jj_cut_order_processes p WHERE p.order_id = o.id) AS process_count,
+           (SELECT COALESCE(SUM(p.unit_price),0) FROM jj_cut_order_processes p WHERE p.order_id = o.id) AS total_price
+    FROM jj_cut_orders o WHERE o.style_id = ? AND o.deleted = 0
+    ORDER BY o.bed_no DESC`).all(req.params.id);
+  const done = await cutting.completedByOrders(rows.map((r) => r.id));
+  res.json({ list: rows.map((r) => {
+    const completed = done[r.id] || 0;
+    return Object.assign({}, r, {
+      completed_qty: completed,
+      percent: r.total_qty > 0 ? Math.round((completed / r.total_qty) * 100) : 0
+    });
+  }) });
+});
+
+router.post("/styles/:id/processes/sync", A.authRequired, A.managerRequired, async (req, res) => {
+  const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
+  if (!style) return res.status(404).json({ error: "款式不存在" });
+  const ids = Array.isArray(req.body && req.body.orderIds) ? req.body.orderIds.filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: "请选择要同步的裁床单" });
+  const ph = ids.map(() => "?").join(",");
+  const orders = await db.prepare(
+    `SELECT id, bed_no FROM jj_cut_orders WHERE id IN (${ph}) AND style_id = ? AND deleted = 0`).all(...ids, style.id);
+  if (!orders.length) return res.status(400).json({ error: "选中的裁床单不属于这个款式" });
+
+  const sps = await db.prepare("SELECT * FROM jj_style_processes WHERE style_id=? ORDER BY seq ASC").all(style.id);
+  const now = Date.now();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    for (const o of orders) {
+      // 整套替换而不是增量 diff：工序增删改序都可能同时发生，替换最简单也最不会错。
+      // 已有的打点记录挂在旧的 order_process_id 上，替换后那部分进度会归零——这是
+      // 有意的：工序表都换了，旧进度对不上新工序，让车间按新工序重新打点。
+      await conn.query("DELETE FROM jj_cut_order_processes WHERE order_id = ?", [o.id]);
+      if (sps.length) {
+        await conn.query(
+          `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
+           VALUES ?`,
+          [sps.map((sp, i) => [uid(), o.id, sp.seq || i + 1, sp.name || "工序" + (i + 1),
+            sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
+            sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.id, now])]);
+      }
+    }
+    await conn.commit();
+  } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+
+  const label = `${style.code || style.name}`;
+  await logOp(req.user.id, `款式「${style.name}」同步工序到 ${orders.length} 张裁床单`);
+  await notifyManagers(`${req.user.name} 把 ${label} 的工序同步到了 ${orders.length} 张裁床单`, "/cutorders", req.user.id,
+    { actorName: req.user.name, targetLabel: label, what: `同步工序到 ${orders.length} 张裁床单（床次 ${orders.map(o => o.bed_no).join("、")}）` });
+  res.json({ synced: orders.length });
+});
+
 router.use(cutting.router);
 
 /* ---------------- 应用内通知 ---------------- */

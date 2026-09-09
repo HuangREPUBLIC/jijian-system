@@ -139,6 +139,32 @@ async function call(method, p, token, body) {
   ok(afterPatch.j.order.ship_date === "2026-09-20" && afterPatch.j.order.doc_no === "9999", "改完再查，出货日期和单号都变了");
   ok((await call("PATCH", `/cut-orders/${orderId}`, wT, { docNo: "0000" })).status === 403, "计件工不能改裁床单单头");
 
+  // —— 同步工序：只影响被选中的裁床单 ——
+  // 用 sid2 建两张单，改款式工序后只同步其中一张
+  const mk = async (bedNo) => (await call("POST", "/cut-orders", aT, {
+    styleId: sid2, bedNo, cutDate: "2026-09-09", colors: ["A"], sizes: ["S"],
+    startNo: 1, multiple: true, cells: { "A|S": { input: 10, bundles: 1 } }
+  })).j.order.id;
+  const o1 = await mk(11), o2 = await mk(12);
+
+  const syncable = await call("GET", `/styles/${sid2}/syncable-orders`, aT);
+  ok(syncable.status === 200 && syncable.j.list.length >= 2, "同步工序弹窗能列出该款的裁床单");
+  ok(syncable.j.list[0].process_count === 1, "列表带出工序数");
+  ok(syncable.j.list[0].completed_qty === 0 && syncable.j.list[0].percent === 0, "列表带出已完成件数与百分比");
+
+  // 改款式工序：从 1 道变 2 道
+  await call("PUT", `/styles/${sid2}/processes`, aT, {
+    items: [
+      { name: "只剩这道", priceMode: "default", unitPrice: 5, showPrice: true },
+      { name: "新加的一道", priceMode: "default", unitPrice: 6, showPrice: true }
+    ]
+  });
+  const sync = await call("POST", `/styles/${sid2}/processes/sync`, aT, { orderIds: [o1] });
+  ok(sync.status === 200 && sync.j.synced === 1, "同步了 1 张裁床单");
+  ok((await call("GET", `/cut-orders/${o1}`, aT)).j.processes.length === 2, "被选中的单工序更新为 2 道");
+  ok((await call("GET", `/cut-orders/${o2}`, aT)).j.processes.length === 1, "未选中的单工序快照保持不变");
+  ok((await call("POST", `/styles/${sid2}/processes/sync`, wT, { orderIds: [o2] })).status === 403, "计件工不能同步工序");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
