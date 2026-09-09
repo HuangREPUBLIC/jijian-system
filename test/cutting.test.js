@@ -247,6 +247,32 @@ async function call(method, p, token, body) {
   ok(byStyle.status === 200 && byStyle.j.list.length >= 1, "按款看有数据");
   ok(byStyle.j.list[0].sheet_count >= 1 && byStyle.j.list[0].total_qty > 0, "按款看带出裁床单数与总件数");
 
+  // —— T13 代打点分岗单价：接线必须用被代打点人(actor)的岗位，不是操作者(管理员)的岗位 ——
+  // POST /scan 取价用的是 actor.role（被代打点那个人），不是 req.user.role（操作者）。
+  // 这个点极易写反：如果接错成 req.user.role，管理员代计件工打点时会取到管理员岗位（在
+  // prices 里没定义）回落默认价，而不是计件工岗位的专价——下面用价格差异把接线守住。
+  const st3 = await call("POST", "/styles", aT, { name: "代打点测试款", code: "FC9999" });
+  const sid3 = st3.j.style.id;
+  await call("PUT", `/styles/${sid3}/processes`, aT, {
+    items: [{ name: "分岗工序", priceMode: "role", unitPrice: 1, prices: { worker: 8 }, showPrice: true }]
+  });
+  const so3 = (await call("POST", "/cut-orders", aT, {
+    styleId: sid3, bedNo: 31, cutDate: "2026-09-09", colors: ["A"], sizes: ["S"],
+    startNo: 1, multiple: true, cells: { "A|S": { input: 5, bundles: 1 } }
+  })).j.order.id;
+  const sd3 = await call("GET", `/cut-orders/${so3}`, aT);
+  const bundle3 = sd3.j.bundles[0], procRole = sd3.j.processes[0];
+  ok(procRole.price_mode === "role", "分岗工序快照进裁床单");
+
+  // 管理员用自己的 token 调 /scan，但带上 userId=wkId（计件工，role=worker）代他打点：
+  // 单价必须是计件工岗位的专价(8元)，不能是管理员岗位/默认价(1元)
+  const scan3 = await call("POST", "/scan", aT, {
+    orderId: so3, bundleNo: bundle3.bundle_no, orderProcessId: procRole.id, qty: 5, date: "2026-09-09", userId: wkId
+  });
+  ok(scan3.status === 200, "管理员能代计件工打点");
+  ok(scan3.j.record.user_id === wkId, "记录写在被代打点的计件工名下");
+  ok(scan3.j.record.unit_price === 8, "代打点取的是被代打点人(计件工)岗位的分岗单价，不是操作者(管理员)岗位/默认价");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

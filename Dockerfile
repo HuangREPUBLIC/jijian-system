@@ -11,6 +11,9 @@ COPY server ./server
 # 并设固定 JWT_SECRET 让"保持登录"跨部署有效）。DATA_DIR 仅存款式图上传（临时）。
 ENV PORT=80
 ENV DATA_DIR=/app/data
+# 第二道保险：日期计算已经用固定 UTC+8 偏移算（server/daytime.js），不依赖这个变量；
+# 但万一有遗漏的地方用了本地时间 API，把容器时区显式设成中国时区兜底。
+ENV TZ=Asia/Shanghai
 EXPOSE 80
 
 CMD ["node", "server/index.js"]

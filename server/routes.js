@@ -7,6 +7,7 @@ const A = require("./auth");
 const { logOp } = require("./oplog");
 const cutting = require("./routes_cutting");
 const { resolvePrice } = require("./pricing");
+const { cnToday } = require("./daytime");
 
 const router = express.Router();
 
@@ -358,7 +359,9 @@ router.delete("/styles/:id", A.authRequired, async (req, res) => {
  */
 router.post("/scan", A.authRequired, async (req, res) => {
   const { ticketNo, orderId, bundleNo, orderProcessId, processId, styleId, userId } = req.body || {};
-  const date = (req.body && req.body.date) || new Date().toISOString().slice(0, 10);
+  // 日期必须按中国时区算，不能用 new Date().toISOString() 直接截 UTC 日期——线上容器时区是 UTC，
+  // 中国凌晨 0-8 点这段时间会被算成"昨天"，跨月时甚至会把这条打点记到上个月的工资里。
+  const date = (req.body && req.body.date) || cnToday();
 
   let targetUserId = req.user.id;
   if (userId && userId !== req.user.id) {
@@ -367,6 +370,16 @@ router.post("/scan", A.authRequired, async (req, res) => {
   }
   const actor = targetUserId === req.user.id ? req.user : await A.userById(targetUserId);
   if (!actor) return res.status(400).json({ error: "员工不存在" });
+
+  // 只传了 orderId 或只传了 bundleNo（漏传另一个）：调用方明显是想按扎打点，不能悄悄掉进
+  // 自由打点分支——那样报错会变成"缺少工序/数量"，跟真正缺的东西（bundleNo/orderId）不对应，
+  // 排查时很误导。
+  if (orderId !== undefined && bundleNo === undefined) {
+    return res.status(400).json({ error: "按扎打点需要同时给 orderId 和 bundleNo，缺少 bundleNo" });
+  }
+  if (bundleNo !== undefined && orderId === undefined) {
+    return res.status(400).json({ error: "按扎打点需要同时给 orderId 和 bundleNo，缺少 orderId" });
+  }
 
   const isBundleScan = ticketNo !== undefined || (orderId !== undefined && bundleNo !== undefined);
   if (!isBundleScan) {
@@ -394,30 +407,58 @@ router.post("/scan", A.authRequired, async (req, res) => {
     .get(orderProcessId, bundle.order_id);
   if (!proc) return res.status(400).json({ error: "工序不存在或不属于这张裁床单" });
 
-  const doneRow = await db.prepare(
-    "SELECT COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? AND order_process_id=?")
-    .get(bundle.id, proc.id);
-  const done = Number(doneRow.done) || 0;
-  const left = bundle.qty - done;
-  if (left <= 0) return res.status(400).json({ error: `扎号 ${bundle.bundle_no} 的「${proc.name}」已经做完了` });
+  // 「查已完成数 → 校验超额 → 插入」这三步必须在一个事务里靠行锁串行化：不加锁的话，两个
+  // 车间终端同时扫同一扎同一工序会各自读到旧的已完成数、各自通过校验、各自插入，完成数
+  // 就会超过裁床件数，超额校验形同虚设。用 FOR UPDATE 锁住这一扎，同一扎的并发打点排队执行；
+  // 事务内全部走 conn.query，不能混用 db.prepare（那样跑在事务外，锁不住）。
+  const conn = await pool.getConnection();
+  let id, qty, unitPrice, remaining;
+  try {
+    await conn.beginTransaction();
+    await conn.query("SELECT * FROM jj_cut_bundles WHERE id = ? FOR UPDATE", [bundle.id]);
 
-  const qty = req.body.qty === undefined || req.body.qty === "" ? left : Number(req.body.qty);
-  if (!(qty > 0)) return res.status(400).json({ error: "件数要大于 0" });
-  if (qty > left) return res.status(400).json({ error: `超了，扎号 ${bundle.bundle_no} 的「${proc.name}」只剩 ${left} 件` });
+    const [doneRows] = await conn.query(
+      "SELECT COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? AND order_process_id=?",
+      [bundle.id, proc.id]);
+    const done = Number(doneRows[0].done) || 0;
+    const left = bundle.qty - done;
+    if (left <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: `扎号 ${bundle.bundle_no} 的「${proc.name}」已经做完了` });
+    }
 
-  // 单价在打点这一刻定死：之后改工价不会追溯改动已经算过的工资
-  const unitPrice = resolvePrice(proc, { size: bundle.size, role: actor.role });
+    qty = req.body.qty === undefined || req.body.qty === "" ? left : Number(req.body.qty);
+    if (!(qty > 0)) {
+      await conn.rollback();
+      return res.status(400).json({ error: "件数要大于 0" });
+    }
+    if (qty > left) {
+      await conn.rollback();
+      return res.status(400).json({ error: `超了，扎号 ${bundle.bundle_no} 的「${proc.name}」只剩 ${left} 件` });
+    }
 
-  const id = uid();
-  await db.prepare(
-    `INSERT INTO jj_scan_records(id,user_id,style_id,process_id,date,qty,created_at,order_id,bundle_id,order_process_id,unit_price)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, targetUserId, bundle.style_id, proc.style_process_id || null, date, qty, Date.now(),
-      order.id, bundle.id, proc.id, unitPrice);
+    // 单价在打点这一刻定死：之后改工价不会追溯改动已经算过的工资
+    unitPrice = resolvePrice(proc, { size: bundle.size, role: actor.role });
+    remaining = left - qty;
+
+    id = uid();
+    await conn.query(
+      `INSERT INTO jj_scan_records(id,user_id,style_id,process_id,date,qty,created_at,order_id,bundle_id,order_process_id,unit_price)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, targetUserId, bundle.style_id, proc.style_process_id || null, date, qty, Date.now(),
+        order.id, bundle.id, proc.id, unitPrice]);
+
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 
   res.json({
     record: await db.prepare("SELECT * FROM jj_scan_records WHERE id=?").get(id),
-    bundle, remaining: left - qty
+    bundle, remaining
   });
 });
 

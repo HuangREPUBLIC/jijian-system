@@ -14,6 +14,7 @@ const A = require("./auth");
 const { planBundles, duplicateBundleNos } = require("./cutting");
 const { visibleTo } = require("./pricing");
 const { logOp } = require("./oplog");
+const { cnDayStr } = require("./daytime");
 
 const router = express.Router();
 // 跟 routes.js 一样包一层 async 异常捕获（express4 不会自动捕获 async handler 的 reject）
@@ -411,7 +412,11 @@ router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res)
 });
 
 /* ---------------- 生产管理概览 ---------------- */
-const dayStr = (d) => d.toISOString().slice(0, 10);
+// 日期必须按中国时区算，不能直接截 UTC 的 toISOString()——见 server/daytime.js 的注释。
+// 这里换成 cnDayStr 后，yesterday/month 分支的算法不用变：
+// cnDayStr(now - 86400000) 就是"中国时区的昨天"（固定偏移不受时区规则影响，减 24 小时
+// 等价于日历退一天），month 的 from 同理基于中国日期算。
+const dayStr = cnDayStr;
 router.get("/production/overview", A.authRequired, async (req, res) => {
   const range = req.query.range || "today";
   const now = new Date();

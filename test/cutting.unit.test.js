@@ -3,6 +3,7 @@
 const path = require("path");
 const { planBundles, cellKey, duplicateBundleNos } = require(path.join(__dirname, "..", "server", "cutting"));
 const { resolvePrice, visibleTo } = require(path.join(__dirname, "..", "server", "pricing"));
+const { cnDayStr } = require(path.join(__dirname, "..", "server", "daytime"));
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log("PASS " + n); } else { fail++; console.log("FAIL " + n); } };
 
@@ -145,6 +146,12 @@ ok(visibleTo({ visible_roles: '["tech_lead"]' }, "tech_lead") === true, "限制�
   const dups = duplicateBundleNos(r.bundles);
   ok(dups.length === 0, "正常情况下不误报重号");
 }
+
+// —— 中国时区日期（cnDayStr）：不能直接截 UTC 的 toISOString() ——
+// UTC 16:30 = 中国时间次日 00:30，已经跨到"第二天"
+ok(cnDayStr(new Date("2026-09-09T16:30:00Z")) === "2026-09-10", "UTC 16:30 落在中国的第二天");
+// UTC 02:00 = 中国时间 10:00，还是同一天，不跨天
+ok(cnDayStr(new Date("2026-09-09T02:00:00Z")) === "2026-09-09", "UTC 02:00 不跨天，仍是当天");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
