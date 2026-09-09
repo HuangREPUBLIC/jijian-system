@@ -165,6 +165,10 @@ async function call(method, p, token, body) {
   ok((await call("GET", `/cut-orders/${o2}`, aT)).j.processes.length === 1, "未选中的单工序快照保持不变");
   ok((await call("POST", `/styles/${sid2}/processes/sync`, wT, { orderIds: [o2] })).status === 403, "计件工不能同步工序");
 
+  // —— GET syncable-orders 款式存在性校验 ——
+  const notExistRes = await call("GET", "/styles/xxx-not-exist/syncable-orders", aT);
+  ok(notExistRes.status === 404, "不存在的款式返回404");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

@@ -720,6 +720,8 @@ router.delete("/process-templates/:id", A.authRequired, async (req, res) => {
 // 裁床单的工序是下单时的快照，改款式工序默认不影响已建的单（否则改一次价会追溯改掉
 // 所有历史单算出来的工资）。要生效必须在这里显式选单同步。
 router.get("/styles/:id/syncable-orders", A.authRequired, A.managerRequired, async (req, res) => {
+  const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
+  if (!style) return res.status(404).json({ error: "款式不存在" });
   const rows = await db.prepare(`
     SELECT o.id, o.bed_no, o.doc_no, o.cut_date, o.total_qty,
            (SELECT COUNT(*) FROM jj_cut_order_processes p WHERE p.order_id = o.id) AS process_count,
