@@ -258,18 +258,20 @@ select.in{appearance:none;-webkit-appearance:none;
 }
 .seg button.on{background:var(--card);color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
 
-/* 款式里的生产工序表格 + 底部那一行新增 */
-/* 款式里的生产工序表（min-width 的覆盖在下面 table.tbl 之后，靠源码顺序生效） */
-table.sp-tbl{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
-.sp-tbl th,.sp-tbl td{padding:9px 8px}
-.sp-tbl td:first-child,.sp-tbl th:first-child{width:36px;text-align:center;color:var(--ink-2);padding-left:12px}
-.sp-tbl td:last-child,.sp-tbl th:last-child{text-align:right;padding-right:12px;white-space:nowrap}
-.sp-tbl .sp-price{min-height:36px;padding:6px 8px;width:78px;font-size:var(--fs-body)}
-.sp-add{display:flex;gap:8px;align-items:center;padding:12px;flex-wrap:wrap}
-/* 工序名一般就两三个字，下拉框按内容宽度收紧，别撑满整行 */
-.sp-add select.in{width:auto;max-width:190px;flex:0 1 auto;padding-right:34px}
-.sp-add input.in{width:104px;flex:none}
-.sp-add .btn{flex:none;margin-left:auto}
+/* 工序编辑器（款式表单「生产工序」段落 与 独立的「修改工序」页共用） */
+table.pe-tbl{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+.pe-tbl th,.pe-tbl td{white-space:nowrap;padding:9px 8px}
+.pe-tbl input.in{min-width:96px}
+.pe-tbl input.pe-sub{min-width:72px}
+.stepper{display:inline-flex;align-items:center;gap:4px}
+.stepper button{width:30px;height:30px;border-radius:var(--radius-sm);border:1px solid var(--line);
+  background:var(--card);color:var(--ink);font-size:16px;line-height:1;cursor:pointer}
+.stepper input{width:84px;text-align:center}
+/* 显示价格开关 */
+.sw{width:44px;height:26px;border-radius:13px;border:0;background:var(--line);position:relative;cursor:pointer;padding:0}
+.sw i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s ease}
+.sw.on{background:var(--brand)}
+.sw.on i{left:21px}
 
 /* 分页器 */
 .pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 4px 0}
@@ -299,11 +301,28 @@ table.sp-tbl{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
   display:inline-flex;align-items:center}
 .chip.on{background:var(--blue);border-color:var(--blue);color:#fff}
 
+/* 款式选项控件：已选 chip 自带 ×，选项增删收进同一个可搜索面板（不再需要单独的齿轮图标） */
+.optbox{position:relative}
+.opt-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip .chip-x{margin-left:4px;border:0;background:transparent;color:inherit;
+  font-size:15px;line-height:1;padding:0 2px;cursor:pointer}
+.chip.add{border-style:dashed;color:var(--ink-3)}
+.opt-panel{margin-top:8px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--card);box-shadow:var(--shadow);padding:8px}
+.opt-search{margin-bottom:6px}
+.opt-list{max-height:240px;overflow-y:auto}
+.opt-row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 8px;border-radius:var(--radius-sm);cursor:pointer;min-height:40px}
+.opt-row:hover{background:var(--card-2)}
+/* 用 --blue-2 而不是 --brand：--brand 只在浅色/深色下各有一个固定值(专给背景/描边用)，
+   当文字颜色直接读在卡片底色上，深色模式下对比度不够；--blue-2 才是这套 token 里专门
+   给"高亮文字"两套主题分别调过的颜色（跟 .act-btn/.tab.on 用的是同一个） */
+.opt-row.on .opt-name{color:var(--blue-2);font-weight:600}
+.opt-row.create{color:var(--blue-2)}
+
 /* ---------- 表格 ---------- */
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width:460px;font-variant-numeric:tabular-nums}
-/* 款式里的生产工序表要在 375px 手机上完整放下(含"删除")，不吃上面这个 460px 最小宽度 */
-table.tbl.sp-tbl{min-width:0}
 .tbl th{text-align:left;color:var(--ink-2);font-weight:400;font-size:var(--fs-sub);padding:9px 12px;border-bottom:.5px solid var(--line);white-space:nowrap}
 .tbl td{border-bottom:.5px solid var(--line);padding:11px 12px;vertical-align:middle}
 .tbl tr:last-child td{border-bottom:0}

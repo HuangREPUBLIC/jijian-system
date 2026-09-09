@@ -29,7 +29,11 @@ let state = {
   slog: { date: todayStr(), records: null },
   pay: { month: monthStr(), list: null, mine: null, editing: "" },
   empKw: "", empPage: 1,
-  notif: { unread: 0, list: null }
+  notif: { unread: 0, list: null },
+  // 尺码/颜色/客户三个选项控件各自的展开状态与搜索词。桌面端展开是下拉面板，手机端是底部弹层。
+  optUI: { size: { open: false, kw: "" }, color: { open: false, kw: "" }, customer: { open: false, kw: "" } },
+  // 工序编辑器：款式表单里的「生产工序」段落和款式列表的「修改工序」页共用这份状态
+  pe: null
 };
 const EMP_PAGE_SIZE = 10;       // 管理页员工列表每页条数
 let route = { v: "home", id: null };
@@ -161,9 +165,11 @@ async function api(method, path, body) {
   return j;
 }
 // 执行一个动作 → 重新拉当前页数据 → 重绘
+// 返回 fn() 的结果（成功）或 undefined（失败）：调用方需要知道操作是否成功时可以判断返回值，
+// 已有的 15 处调用都没接返回值，这个改动对它们是无害的。
 async function run(fn, okMsg) {
-  try { await fn(); await loadView(route.v); render(); if (okMsg) toast(okMsg); }
-  catch (e) { toast((e && e.error) || "操作失败"); }
+  try { const result = await fn(); await loadView(route.v); render(); if (okMsg) toast(okMsg); return result; }
+  catch (e) { toast((e && e.error) || "操作失败"); return undefined; }
 }
 
 /* ---- 应用内通知：轮询未读数，桌面端铃铛红点 / 手机端"我的"页红点用 ---- */
@@ -227,6 +233,24 @@ async function loadView(v) {
     ]);
     state.styles = s.styles || []; state.processes = p.processes || [];
     state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    return;
+  }
+  if (v === "styleprocs") {
+    const [r, roleRes] = await Promise.all([
+      api("GET", `/styles/${route.id}/processes`),
+      api("GET", "/roles").catch(() => ({ roles: [] }))  // 普通员工没有管理权限，取不到岗位列表就留空，不阻塞页面
+    ]);
+    const style = (state.styles || []).find((s) => s.id === route.id) || {};
+    state.pe = {
+      styleId: route.id,
+      mode: (r.list[0] && r.list[0].price_mode) || "default",
+      sizes: String(style.size || "").split(",").filter(Boolean),
+      roles: roleRes.roles || [],
+      items: r.list.map((x) => ({
+        name: x.name, unitPrice: x.unit_price, prices: x.prices || {},
+        showPrice: x.show_price !== false, visibleRoles: x.visible_roles || []
+      }))
+    };
     return;
   }
   if (v === "attendance") {
@@ -444,7 +468,7 @@ function selectHtml(id, opts, cur, onChange, placeholder) {
 }
 
 /* ================= 路由与渲染 ================= */
-const SUB_VIEWS = { processes: "home", styles: "home", attendance: "home", efficiency: "home", scanlog: "home", payroll: "home", notifs: "mine" };
+const SUB_VIEWS = { processes: "home", styles: "home", styleprocs: "home", attendance: "home", efficiency: "home", scanlog: "home", payroll: "home", notifs: "mine" };
 function go(v, id) {
   route = { v, id: id || null };
   lightbox = null; renderLightbox();
@@ -460,7 +484,7 @@ function pageMeta() {
   const back = (label, v) => `<button class="nav-btn" onclick="go('${v}')">‹ ${esc(label)}</button>`;
   const T = {
     home: "首页", scan: "打点", mine: "我的", admin: "管理",
-    processes: "工序模板", styles: "款式管理", attendance: "考勤录入",
+    processes: "工序模板", styles: "款式管理", styleprocs: "修改工序", attendance: "考勤录入",
     efficiency: "效率看板", cutting: "生产管理", scanlog: "扫菲记录", payroll: "薪资管理", notifs: "消息通知"
   };
   const parent = SUB_VIEWS[route.v];
@@ -543,7 +567,7 @@ function render() {
   if (!me()) { app.innerHTML = vLogin(); return; }
   const meta = pageMeta();
   const views = {
-    home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, attendance: vAttendance,
+    home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, styleprocs: vStyleProcs, attendance: vAttendance,
     efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
     notifs: vNotifs
   };
@@ -746,30 +770,131 @@ function vStyles() {
           onclick="event.stopPropagation();A.lightboxFromEl(this)" alt="款式图">` : ""}
         <div class="row-main"><div class="row-label">${esc(s.name)}${s.code ? " · " + esc(s.code) : ""}</div>
           <div class="row-sub">${[s.size, s.color, s.customer].filter(Boolean).map(esc).join(" · ") || "未填尺码/颜色/客户"}</div></div>
-        <div class="row-acts"><button class="act-btn danger" onclick="event.stopPropagation();A.delStyle('${s.id}')">删除</button></div>
+        <div class="row-acts">
+          <button class="act-btn" onclick="event.stopPropagation();go('styleprocs','${s.id}')">修改工序</button>
+          <button class="act-btn danger" onclick="event.stopPropagation();A.delStyle('${s.id}')">删除</button>
+        </div>
       </div>`;
     }).join("") : `<div class="empty">还没有款式</div>`}
   </div></section>
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     <button class="btn block" onclick="A.newStyle()">新增款式</button></div></section>`;
 }
-// 某条款式工序的"模板默认单价"：新加的本地暂存项从工序模板里取，已保存的用接口返回的 template_price
-function tplPriceOf(it) {
-  if (it.template_price !== null && it.template_price !== undefined) return it.template_price;
-  const p = (state.processes || []).find(x => x.id === it.process_id);
-  return p && p.unit_price ? p.unit_price : 0;
+
+/* ---------- 款式的尺码/颜色/客户选项控件 ----------
+ * 原来的做法是一排 chip + 右上角一个裸齿轮图标（点开才能删选项），用户根本找不到，
+ * 等于"没有删减功能"。改成：已选项 chip 自带 ×，选项的增删都收进同一个下拉面板里。 */
+const OPT_META = {
+  size: { label: "款式尺码", listKey: "sizes", multi: true, ph: "搜索 / 选择尺码" },
+  color: { label: "款式颜色", listKey: "colors", multi: true, ph: "搜索 / 选择颜色" },
+  customer: { label: "客户名称", listKey: "customers", multi: false, ph: "搜索 / 选择客户" }
+};
+function optSelected(type) {
+  if (type === "customer") return styleForm.customer ? [styleForm.customer] : [];
+  const map = type === "size" ? styleForm.size : styleForm.color;
+  return Object.keys(map).filter((k) => map[k]);
 }
-function vStyleForm() {
-  const f = styleForm, o = state.styleOptions || { sizes: [], colors: [], customers: [] };
-  const procs = state.processes || [];
-  const total = num(f.procs.reduce((s, it) => s + (Number(it.effectivePrice) || 0), 0));
-  const chip = (type, v, on) => `<button type="button" class="chip ${on ? "on" : ""}" onclick="A.toggleOpt('${type}','${encodeURIComponent(v)}')">${esc(v)}</button>`;
+function optPickerHtml(type) {
+  const meta = OPT_META[type];
+  const all = ((state.styleOptions || {})[meta.listKey]) || [];
+  const ui = state.optUI[type];
+  const sel = optSelected(type);
+  const kw = (ui.kw || "").trim();
+  const cand = all.filter((v) => !kw || v.toLowerCase().includes(kw.toLowerCase()));
+  const exact = all.some((v) => v === kw);
+  return `<div class="field optbox${ui.open ? " open" : ""}">
+    <span>${esc(meta.label)}${meta.multi ? "（可多选）" : ""}</span>
+    <div class="opt-chips">
+      ${sel.length ? sel.map((v) => `<span class="chip on">${esc(v)}<button class="chip-x" type="button"
+          onclick="event.stopPropagation();A.optRemove('${type}','${encodeURIComponent(v)}')" aria-label="移除${esc(v)}">×</button></span>`).join("")
+      : `<span class="row-sub">还没有选${esc(meta.label)}</span>`}
+      <button class="chip add" type="button" onclick="A.optOpen('${type}')">＋ 选择</button>
+    </div>
+    ${ui.open ? `<div class="opt-panel">
+      <input class="in opt-search" placeholder="${esc(meta.ph)}" value="${esc(ui.kw)}"
+        oninput="A.optSearch('${type}',this.value)" autocomplete="off">
+      <div class="opt-list">
+        ${cand.length ? cand.map((v) => `<div class="opt-row${sel.includes(v) ? " on" : ""}"
+            onclick="A.optToggle('${type}','${encodeURIComponent(v)}')">
+            <span class="opt-name">${esc(v)}</span>
+            <button class="act-btn danger ghost" type="button"
+              onclick="event.stopPropagation();A.optDeleteOption('${type}','${encodeURIComponent(v)}')">删除</button>
+          </div>`).join("") : `<div class="empty">没有匹配的${esc(meta.label)}</div>`}
+        ${kw && !exact ? `<div class="opt-row create" onclick="A.optCreate('${type}')">＋ 新建「${esc(kw)}」</div>` : ""}
+      </div>
+      <div class="btn-row"><button class="btn ghost mini block" type="button" onclick="A.optOpen('${type}')">收起</button></div>
+    </div>` : ""}
+  </div>`;
+}
+
+/* ---------- 工序编辑器：款式表单里的「生产工序」段落和款式列表的「修改工序」页共用这一份 ----------
+ * 之前那版只有 序号/工序名/工价，而且没有工序模板就完全加不了工序（"请先去工序模板里添加"
+ * 是条死路）。现在工序名直接打字就能加，工序模板降级成可选的快捷来源。 */
+const PRICE_MODES = [["default", "默认单价"], ["size", "分码单价"], ["role", "分岗位单价"]];
+function peTotal() {
+  return (state.pe.items || []).reduce((s, it) => s + (Number(it.unitPrice) || 0), 0);
+}
+// 切模式前先看有没有设过多单价：跟参考系统一致，有多单价就不让直接切，先让用户清掉
+function peHasMultiPrices() {
+  return (state.pe.items || []).some((it) => it.prices && Object.keys(it.prices).some((k) => it.prices[k] !== "" && it.prices[k] !== null));
+}
+function peRoleLabel(k) {
+  const r = (state.pe.roles || []).find((x) => x.k === k);
+  return r ? r.label : k;
+}
+function procEditorHtml() {
+  const pe = state.pe, mode = pe.mode;
+  // 内嵌在款式表单里时，尺码列跟着表单当前勾选的尺码走（不是打开表单那一刻的快照）；
+  // 独立的「修改工序」页没有 styleForm，用装载时从款式记录里取的 sizes 快照。
+  const sizes = styleForm ? Object.keys(styleForm.size || {}) : (pe.sizes || []);
+  const cols = mode === "size" ? sizes : mode === "role" ? pe.roles.map((r) => r.k) : [];
   return `<section class="group"><div class="sum-bar">
-      <div class="sum-item"><div class="sum-num num">${total}</div><div class="sum-label">默认工价合计</div></div>
-      <div class="sum-item"><div class="sum-num num">${f.procs.length}</div><div class="sum-label">工序数量合计</div></div>
+      <div class="sum-item"><div class="sum-num num">${num(peTotal())}</div><div class="sum-label">默认工价合计</div></div>
+      <div class="sum-item"><div class="sum-num num">${pe.items.length}</div><div class="sum-label">工序数量合计</div></div>
     </div></section>
 
   <section class="group">
+    <div class="btn-row" style="padding-left:0;padding-right:0;justify-content:flex-end">
+      <button class="btn ghost mini" onclick="A.pePickTemplate()">选择模板</button>
+      <button class="btn ghost mini" onclick="A.peSaveTemplate()">保存模板</button>
+    </div>
+    <div class="card">
+      <div class="field"><span>价格模式</span>
+        <div class="seg">${PRICE_MODES.map(([k, t]) =>
+          `<button class="${mode === k ? "on" : ""}" onclick="A.peSetMode('${k}')">${t}</button>`).join("")}</div>
+        <div class="row-sub">如果设置了多单价，请先删除多单价再改变单价模式</div></div>
+    </div>
+
+    <div class="card"><div class="tbl-wrap"><table class="tbl pe-tbl">
+      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th>
+        ${cols.map((c) => `<th>${esc(mode === "role" ? peRoleLabel(c) : c)}</th>`).join("")}
+        <th>显示价格</th><th>可见岗位</th></tr>
+      ${pe.items.length ? pe.items.map((it, i) => `<tr>
+        <td><button class="act-btn danger" onclick="A.peDel(${i})">删除</button></td>
+        <td class="num">${i + 1}</td>
+        <td><input class="in" value="${esc(it.name)}" placeholder="工序名称" onchange="A.peSetName(${i},this.value)"></td>
+        <td><div class="stepper">
+          <button onclick="A.peStep(${i},-1)" aria-label="减少">−</button>
+          <input class="in" type="number" inputmode="decimal" step="any" value="${esc(it.unitPrice)}" onchange="A.peSetPrice(${i},this.value)">
+          <button onclick="A.peStep(${i},1)" aria-label="增加">＋</button></div></td>
+        ${cols.map((c) => `<td><input class="in pe-sub" type="number" inputmode="decimal" step="any"
+          value="${esc((it.prices && it.prices[c] !== undefined && it.prices[c] !== null) ? it.prices[c] : "")}"
+          placeholder="${num(it.unitPrice)}"
+          onchange="A.${mode === "role" ? "peSetRolePrice" : "peSetSizePrice"}(${i},'${encodeURIComponent(c)}',this.value)"></td>`).join("")}
+        <td><button class="sw ${it.showPrice ? "on" : ""}" onclick="A.peToggleShow(${i})"
+          aria-label="显示价格" role="switch" aria-checked="${!!it.showPrice}"><i></i></button></td>
+        <td><button class="act-btn" onclick="A.pePickRoles(${i})">${
+          it.visibleRoles && it.visibleRoles.length ? esc(it.visibleRoles.map(peRoleLabel).join("、")) : "所有岗位可见"}</button></td>
+      </tr>`).join("") : `<tr><td colspan="${5 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
+    </table></div></div>
+
+    <div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn block" onclick="A.peAdd()">＋ 新增工序</button></div>
+  </section>`;
+}
+function vStyleForm() {
+  const f = styleForm;
+  return `<section class="group">
     <div class="group-title">基础信息</div>
     <div class="card">
       <div class="field"><span>款式图片</span>${photoPicker("style")}</div>
@@ -779,46 +904,28 @@ function vStyleForm() {
       <label class="field"><span>款式名称<span class="req">*</span></span>
         <input class="in ${f.err.name ? "bad" : ""}" id="sf-name" value="${esc(f.name)}" placeholder="请输入款式名称">
         ${f.err.name ? `<div class="field-err">${esc(f.err.name)}</div>` : ""}</label>
-      <div class="field"><span><span class="opt-label-ic">${icon("styles")}</span>款式尺码（可多选）<span class="opt-acts">
-          <button class="icn-btn" onclick="A.manageStyleOptions('size')" aria-label="管理尺码" title="管理">${icon("gear")}</button>
-          <button class="icn-btn" onclick="A.addStyleOption('size')" aria-label="新增尺码" title="新增">${icon("plus")}</button></span></span>
-        <div class="chips">${o.sizes.length ? o.sizes.map(s => chip("size", s, !!f.size[s])).join("")
-      : `<span class="row-sub">还没有尺码，点右上角新增</span>`}</div></div>
-      <div class="field"><span><span class="opt-label-ic">${icon("processes")}</span>款式颜色（可多选）<span class="opt-acts">
-          <button class="icn-btn" onclick="A.manageStyleOptions('color')" aria-label="管理颜色" title="管理">${icon("gear")}</button>
-          <button class="icn-btn" onclick="A.addStyleOption('color')" aria-label="新增颜色" title="新增">${icon("plus")}</button></span></span>
-        <div class="chips">${o.colors.length ? o.colors.map(c => chip("color", c, !!f.color[c])).join("")
-      : `<span class="row-sub">还没有颜色，点右上角新增</span>`}</div></div>
-      <label class="field"><span><span class="opt-label-ic">${icon("employees")}</span>客户名称<span class="opt-acts">
-          <button class="icn-btn" onclick="A.manageStyleOptions('customer')" aria-label="管理客户" title="管理">${icon("gear")}</button>
-          <button class="icn-btn" onclick="A.addStyleOption('customer')" aria-label="新增客户" title="新增">${icon("plus")}</button></span></span>
-        ${selectHtml("sf-customer", o.customers.map(c => [c, c]), f.customer, "", "请选择客户")}</label>
+      ${optPickerHtml("size")}
+      ${optPickerHtml("color")}
+      ${optPickerHtml("customer")}
     </div>
   </section>
 
   <section class="group">
     <div class="group-title">生产工序</div>
-    <div class="card"><div class="tbl-wrap"><table class="tbl sp-tbl">
-      <tr><th>序号</th><th>工序名称</th><th>工价（元）</th><th>操作</th></tr>
-      ${f.procs.length ? f.procs.map((it, i) => `<tr>
-        <td class="num">${i + 1}</td>
-        <td style="white-space:nowrap">${esc(it.process_name)}</td>
-        <td><input class="in sp-price" type="number" inputmode="decimal" step="any"
-          value="${it.unit_price === null || it.unit_price === undefined ? "" : esc(it.unit_price)}"
-          placeholder="${num(tplPriceOf(it))}" onchange="A.setSpPrice('${it.id}',this.value)"></td>
-        <td><button class="act-btn danger" onclick="A.delSp('${it.id}')">删除</button></td></tr>`).join("")
-      : `<tr><td colspan="4"><div class="empty">还没有工序，用下面这行添加</div></td></tr>`}
-    </table></div></div>
-    <div class="card" style="margin-top:10px">${procs.length ? `<div class="sp-add">
-      ${selectHtml("ap-proc", procs.map(p => [p.id, p.name]), (procs[0] || {}).id)}
-      <input class="in" id="ap-price" type="number" inputmode="decimal" step="any" placeholder="工价">
-      <button class="btn mini" onclick="A.confirmAddProc()">＋ 新增工序</button>
-    </div>` : `<div class="empty">还没有工序模板，请先去「工序模板」里添加工序，再回来选</div>`}</div>
+    ${procEditorHtml()}
   </section>
 
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     <button class="btn block" onclick="A.saveStyle()">提交</button>
     <button class="btn ghost block" onclick="A.cancelStyle()">取消</button></div></section>`;
+}
+function vStyleProcs() {
+  // go() 切路由后会先同步 render() 一次，这时 loadView 还没跑完，state.pe 可能还是上一个页面
+  // 留下的 null（或者上一个款式的数据）——不判空直接调用 procEditorHtml() 会当场报错。
+  if (!state.pe || state.pe.styleId !== route.id) return `<section class="group"><div class="empty">加载中…</div></section>`;
+  return procEditorHtml() + `<section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+    <button class="btn block" onclick="A.peSubmit()">保存</button>
+    <button class="btn ghost block" onclick="go('styles')">取消</button></div></section>`;
 }
 
 /* ---------- 考勤录入 ---------- */
@@ -1218,8 +1325,11 @@ const A = {
   /* ---- 款式 ---- */
   newStyle() {
     photoDraft = { style: [] };
-    styleForm = { id: "", name: "", code: "", customer: "", size: {}, color: {}, procs: [], err: {} };
+    styleForm = { id: "", name: "", code: "", customer: "", size: {}, color: {}, err: {} };
+    state.pe = { styleId: null, mode: "default", sizes: [], roles: [], items: [] };
     render(); window.scrollTo(0, 0);
+    // 新建款式也可能要按岗位设可见性，异步把岗位列表补上（普通员工没有权限就留空，不阻塞表单）
+    api("GET", "/roles").then(r => { if (state.pe) { state.pe.roles = r.roles || []; render(); } }).catch(() => {});
   },
   async editStyle(id) {
     const s = (state.styles || []).find(x => x.id === id); if (!s) return;
@@ -1227,122 +1337,175 @@ const A = {
     const size = {}, color = {};
     String(s.size || "").split(",").forEach(x => { if (x) size[x] = true; });
     String(s.color || "").split(",").forEach(x => { if (x) color[x] = true; });
-    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, procs: [], err: {} };
+    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, err: {} };
+    state.pe = { styleId: s.id, mode: "default", sizes: String(s.size || "").split(",").filter(Boolean), roles: [], items: [] };
     render(); window.scrollTo(0, 0);
     try {
-      const r = await api("GET", `/styles/${id}/processes`);
-      styleForm.procs = r.list || []; render();
+      const [r, roleRes] = await Promise.all([
+        api("GET", `/styles/${id}/processes`),
+        api("GET", "/roles").catch(() => ({ roles: [] }))
+      ]);
+      state.pe = {
+        styleId: s.id,
+        mode: (r.list[0] && r.list[0].price_mode) || "default",
+        sizes: String(s.size || "").split(",").filter(Boolean),
+        roles: roleRes.roles || [],
+        items: r.list.map((x) => ({
+          name: x.name, unitPrice: x.unit_price, prices: x.prices || {},
+          showPrice: x.show_price !== false, visibleRoles: x.visible_roles || []
+        }))
+      };
+      render();
     } catch (e) { toast((e && e.error) || "工序加载失败"); }
   },
-  cancelStyle() { styleForm = null; photoDraft = {}; render(); },
+  cancelStyle() { styleForm = null; state.pe = null; photoDraft = {}; render(); },
   // 表单里有多处操作会触发重绘（选尺码/颜色、加工序…），重绘前先把输入框里的内容存回 styleForm
   syncStyleForm() {
     if (!styleForm) return;
     if ($("sf-name")) styleForm.name = val("sf-name");
     if ($("sf-code")) styleForm.code = val("sf-code");
-    if ($("sf-customer")) styleForm.customer = val("sf-customer");
   },
-  toggleOpt(type, encV) {
+
+  /* ---- 款式尺码/颜色/客户 选项控件 ---- */
+  optOpen(type) { A.syncStyleForm(); const u = state.optUI[type]; u.open = !u.open; u.kw = ""; render(); },
+  optSearch(type, kw) {
+    state.optUI[type].kw = kw; render();
+    const el = document.querySelector(".optbox.open .opt-search");
+    if (el) { el.focus(); el.setSelectionRange(kw.length, kw.length); }
+  },
+  optToggle(type, encV) {
     const v = decodeURIComponent(encV);
     A.syncStyleForm();
-    const map = type === "size" ? styleForm.size : styleForm.color;
-    if (map[v]) delete map[v]; else map[v] = true;
+    if (type === "customer") { styleForm.customer = styleForm.customer === v ? "" : v; state.optUI[type].open = false; }
+    else { const m = type === "size" ? styleForm.size : styleForm.color; if (m[v]) delete m[v]; else m[v] = true; }
     render();
   },
-  manageStyleOptions(type) {
-    const titles = { size: "管理尺码", color: "管理颜色", customer: "管理客户" };
-    const listKey = { size: "sizes", color: "colors", customer: "customers" }[type];
-    const list = ((state.styleOptions || {})[listKey]) || [];
-    const html = list.length
-      ? list.map(v => `<div class="row-item"><div class="row-main"><div class="row-label">${esc(v)}</div></div>
-          <button class="act-btn danger ghost" onclick="A.deleteStyleOption('${type}','${encodeURIComponent(v)}')">删除</button></div>`).join("")
-      : `<div class="empty">还没有可管理的选项</div>`;
-    modal({ title: titles[type], html: `<div class="card" style="margin-top:0">${html}</div>`, okText: "完成", onOk: () => true });
+  optRemove(type, encV) {
+    const v = decodeURIComponent(encV);
+    A.syncStyleForm();
+    if (type === "customer") styleForm.customer = "";
+    else { const m = type === "size" ? styleForm.size : styleForm.color; delete m[v]; }
+    render();
   },
-  async deleteStyleOption(type, encV) {
+  async optCreate(type) {
+    const value = (state.optUI[type].kw || "").trim();
+    if (!value) return;
+    A.syncStyleForm();
+    try {
+      await api("POST", "/style-options", { type, value });
+      const o = await api("GET", "/style-options");
+      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      if (type === "customer") styleForm.customer = value;
+      else (type === "size" ? styleForm.size : styleForm.color)[value] = true;
+      state.optUI[type].kw = "";
+      render(); toast("已新增");
+    } catch (e) { toast((e && e.error) || "新增失败"); }
+  },
+  async optDeleteOption(type, encV) {
     const value = decodeURIComponent(encV);
+    A.syncStyleForm();
     try {
       await api("DELETE", "/style-options", { type, value });
       const o = await api("GET", "/style-options");
       state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
-      // 编辑中的款式表单如果选中了这个刚被删掉的值，一并清掉，避免留下一个选不到的"幽灵"选中态
-      if (styleForm) {
-        if (type === "size") delete styleForm.size[value];
-        else if (type === "color") delete styleForm.color[value];
-        else if (type === "customer" && styleForm.customer === value) styleForm.customer = "";
-      }
-      render();                    // 刷新表单底下的尺码/颜色 chips(不然删完了那颗 chip 还留在原地)
-      A.manageStyleOptions(type);  // 弹窗内容也跟着刷新
-      toast("已删除");
+      // 删掉的选项如果正被这张款式选中，一并清掉，免得留下一个选不到的"幽灵"选中态
+      if (type === "size") delete styleForm.size[value];
+      else if (type === "color") delete styleForm.color[value];
+      else if (styleForm.customer === value) styleForm.customer = "";
+      render(); toast("已删除");
     } catch (e) { toast((e && e.error) || "删除失败"); }
   },
-  addStyleOption(type) {
-    const titles = { size: "新增尺码", color: "新增颜色", customer: "新增客户" };
-    A.syncStyleForm();
-    modal({
-      title: titles[type], input: true, okText: "确认", onOk: (v) => {
-        const value = String(v || "").trim(); if (!value) return false;
-        api("POST", "/style-options", { type, value })
-          .then(() => api("GET", "/style-options"))
-          .then(o => {
-            state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
-            if (type === "customer") styleForm.customer = value; else (type === "size" ? styleForm.size : styleForm.color)[value] = true;
-            render(); toast("已添加");
-          })
-          .catch(e => toast((e && e.error) || "添加失败"));
-      }
+
+  /* ---- 工序编辑器（款式表单 与 修改工序页 共用） ---- */
+  peSetMode(mode) {
+    if (mode !== state.pe.mode && peHasMultiPrices()) return toast("请先删除多单价再改变单价模式");
+    state.pe.mode = mode; render();
+  },
+  peAdd() { state.pe.items.push({ name: "", unitPrice: 0, prices: {}, showPrice: true, visibleRoles: [] }); render(); },
+  peDel(i) { state.pe.items.splice(i, 1); render(); },
+  peSetName(i, v) { state.pe.items[i].name = v; },
+  peSetPrice(i, v) { state.pe.items[i].unitPrice = Number(v) || 0; render(); },
+  peStep(i, d) {
+    const it = state.pe.items[i];
+    it.unitPrice = Math.max(0, Math.round(((Number(it.unitPrice) || 0) + d * 0.1) * 10000) / 10000);
+    render();
+  },
+  peSetSizePrice(i, encSize, v) {
+    const k = decodeURIComponent(encSize), it = state.pe.items[i];
+    it.prices = it.prices || {};
+    if (v === "") delete it.prices[k]; else it.prices[k] = Number(v) || 0;
+  },
+  peSetRolePrice(i, encRole, v) { A.peSetSizePrice(i, encRole, v); },
+  peToggleShow(i) { state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
+  pePickRoles(i) {
+    const it = state.pe.items[i];
+    const chosen = new Set(it.visibleRoles || []);
+    const html = `<div class="card" style="margin-top:0">${(state.pe.roles || []).map((r) => `
+      <label class="row-item"><span class="row-main"><span class="row-label">${esc(r.label)}</span></span>
+        <input type="checkbox" value="${esc(r.k)}" ${chosen.has(r.k) ? "checked" : ""}></label>`).join("")
+      || `<div class="empty">还没有岗位</div>`}</div>
+      <div class="row-sub">都不勾 = 所有岗位可见</div>`;
+    modal({ title: "可见岗位", html, okText: "确定", onOk: () => {
+      it.visibleRoles = [...document.querySelectorAll(".modal input[type=checkbox]:checked")].map((el) => el.value);
+      render(); return true;
+    } });
+  },
+  async peSaveTemplate() {
+    const items = A.peCollect();
+    if (!items.length) return toast("还没有工序");
+    modal({ title: "保存为工序模板", input: true, okText: "保存", onOk: async (v) => {
+      const name = String(v || "").trim(); if (!name) return false;
+      await run(() => api("POST", "/process-templates", { name, items }), "模板已保存");
+      return true;
+    } });
+  },
+  async pePickTemplate() {
+    const r = await api("GET", "/process-templates");
+    const list = r.list || [];
+    const html = list.length ? list.map((t) => `<div class="row-item tap" onclick="A.peApplyTemplate('${t.id}')">
+        <div class="row-main"><div class="row-label">${esc(t.name)}</div>
+          <div class="row-sub">${t.items.length} 道工序</div></div>
+        <button class="act-btn danger ghost" onclick="event.stopPropagation();A.peDelTemplate('${t.id}')">删除</button>
+      </div>`).join("") : `<div class="empty">还没有保存过模板</div>`;
+    state.pe.templates = list;
+    modal({ title: "选择模板", html: `<div class="card" style="margin-top:0">${html}</div>`, okText: "关闭", onOk: () => true });
+  },
+  peApplyTemplate(id) {
+    const t = (state.pe.templates || []).find((x) => x.id === id);
+    if (!t) return;
+    state.pe.items = t.items.map((it) => ({
+      name: it.name || "", unitPrice: Number(it.unitPrice) || 0, prices: it.prices || {},
+      showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
+    }));
+    A.modalCancel(); render(); toast("已套用模板");
+  },
+  async peDelTemplate(id) {
+    await run(() => api("DELETE", "/process-templates/" + id), "已删除");
+    A.pePickTemplate();
+  },
+  // 从 DOM 兜一次最新值：工序名/工价用的是 onchange，用户没失焦时 state 里还是旧值
+  peCollect() {
+    const rows = [...document.querySelectorAll(".pe-tbl tr")].slice(1);
+    rows.forEach((tr, i) => {
+      const it = state.pe.items[i]; if (!it) return;
+      const nameEl = tr.querySelector("td:nth-child(3) input");
+      if (nameEl) it.name = nameEl.value;
+      const priceEl = tr.querySelector(".stepper input");
+      if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
     });
+    return state.pe.items.filter((it) => String(it.name || "").trim()).map((it) => ({
+      name: String(it.name).trim(),
+      priceMode: state.pe.mode,
+      unitPrice: Number(it.unitPrice) || 0,
+      prices: state.pe.mode === "default" ? null : (it.prices || {}),
+      showPrice: it.showPrice !== false,
+      visibleRoles: it.visibleRoles || []
+    }));
   },
-  // 表格下面那一行「工序下拉 + 工价 + ＋新增工序」，随时可用，不需要先展开什么
-  async confirmAddProc() {
-    const procs = state.processes || [];
-    if (!procs.length) return toast("请先到「工序模板」里添加工序");
-    const pid = val("ap-proc"), priceStr = val("ap-price");
-    const proc = procs.find(p => p.id === pid); if (!proc) return toast("请选择工序");
-    const unitPrice = priceStr !== "" ? Number(priceStr) : null;
-    A.syncStyleForm();
-    if (styleForm.procs.some(x => x.process_id === pid)) return toast(`「${proc.name}」已经在列表里了`);
-    if (styleForm.id) {
-      try {
-        await api("POST", `/styles/${styleForm.id}/processes`, { processId: pid, unitPrice: unitPrice === null ? undefined : unitPrice });
-        const r = await api("GET", `/styles/${styleForm.id}/processes`);
-        styleForm.procs = r.list || []; render(); toast("已添加");
-      } catch (e) { toast((e && e.error) || "添加失败"); }
-      return;
-    }
-    // 新建款式时还没有 styleId，先在本地暂存，提交时一起写进去
-    styleForm.procs.push({
-      id: "pending-" + Date.now(), pending: true, process_id: pid, process_name: proc.name,
-      unit_price: unitPrice, effectivePrice: unitPrice !== null ? unitPrice : (proc.unit_price || 0)
-    });
-    render(); toast("已添加");
-  },
-  // 工价直接在表格里改：输入框失焦就存（留空 = 用工序模板默认价）
-  async setSpPrice(id, v) {
-    const priceStr = String(v || "").trim();
-    const unitPrice = priceStr !== "" ? Number(priceStr) : null;
-    A.syncStyleForm();
-    const it = styleForm.procs.find(x => x.id === id); if (!it) return;
-    if (it.pending) {
-      it.unit_price = unitPrice;
-      it.effectivePrice = unitPrice !== null ? unitPrice : tplPriceOf(it);
-      render(); return;
-    }
-    try {
-      await api("PATCH", "/style-processes/" + id, { unitPrice: unitPrice === null ? "" : unitPrice });
-      const r = await api("GET", `/styles/${styleForm.id}/processes`);
-      styleForm.procs = r.list || []; render(); toast("工价已保存");
-    } catch (e) { toast((e && e.error) || "保存失败"); }
-  },
-  async delSp(id) {
-    A.syncStyleForm();
-    const it = styleForm.procs.find(x => x.id === id); if (!it) return;
-    if (it.pending) { styleForm.procs = styleForm.procs.filter(x => x.id !== id); render(); return; }
-    try {
-      await api("DELETE", "/style-processes/" + id);
-      const r = await api("GET", `/styles/${styleForm.id}/processes`);
-      styleForm.procs = r.list || []; render();
-    } catch (e) { toast((e && e.error) || "删除失败"); }
+  async peSubmit() {
+    const items = A.peCollect();
+    await run(() => api("PUT", `/styles/${state.pe.styleId}/processes`, { items }), "工序已保存");
+    go("styles");
   },
   async saveStyle() {
     A.syncStyleForm();
@@ -1360,14 +1523,9 @@ const A = {
       toast("保存中…", true);
       const r = await api(f.id ? "PATCH" : "POST", f.id ? "/styles/" + f.id : "/styles", body);
       const styleId = f.id || (r.style && r.style.id);
-      if (!f.id && f.procs.length) {
-        for (const it of f.procs) {
-          await api("POST", `/styles/${styleId}/processes`, {
-            processId: it.process_id, unitPrice: it.unit_price === null ? undefined : it.unit_price
-          });
-        }
-      }
-      styleForm = null; photoDraft = {};
+      state.pe.styleId = styleId;
+      await api("PUT", `/styles/${styleId}/processes`, { items: A.peCollect() });
+      styleForm = null; state.pe = null; photoDraft = {};
       await loadView("styles"); render(); toast("已保存");
     } catch (e) { toast((e && e.error) || "保存失败"); }
   },
