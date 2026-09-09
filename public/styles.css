@@ -715,3 +715,9 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
   .mx-cell{min-width:104px}
   .ring-wrap{gap:28px}
 }
+
+/* ---------- 扫菲打点 ---------- */
+.scan-cam{width:100%;max-height:240px;border-radius:var(--radius-sm);background:#000;object-fit:cover}
+.proc-scan{border-top:.5px solid var(--line)}
+.proc-scan .row-acts{gap:6px;align-items:center}
+.proc-scan .in.tiny{width:64px}

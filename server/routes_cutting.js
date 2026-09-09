@@ -379,6 +379,33 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
   })) });
 });
 
+/* ---------------- 按菲票号查扎（扫码打点用） ----------------
+ * 工人手里只有票号（扫出来是 JJ:<菲票号>），不知道属于哪张单，所以要有这条按票号反查的路由。
+ * 权限是 authRequired 而不是 managerRequired——这是工人自己要用的入口。
+ */
+router.get("/bundles/by-ticket/:ticketNo", A.authRequired, async (req, res) => {
+  const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE ticket_no = ?").get(Number(req.params.ticketNo));
+  if (!bundle) return res.status(404).json({ error: "找不到这张菲票" });
+  const order = await db.prepare(
+    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
+     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(bundle.order_id);
+  if (!order) return res.status(400).json({ error: "这张菲票所属的裁床单已删除" });
+  const processes = await db.prepare(
+    "SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
+  const rows = await db.prepare(
+    "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
+    .all(bundle.id);
+  const doneOf = Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
+  // 工价对普通工人按 show_price / visible_roles 剥掉，跟裁床单详情一个口径
+  const mgr = A.isManager(req.user);
+  res.json({ bundle, order, processes: processes.map((p) => ({
+    id: p.id, name: p.name, seq: p.seq,
+    unit_price: (mgr || (p.show_price !== 0 && visibleTo(p, req.user.role))) ? p.unit_price : null,
+    show_price: p.show_price !== 0,
+    done: doneOf[p.id] || 0, remaining: bundle.qty - (doneOf[p.id] || 0)
+  })) });
+});
+
 /* ---------------- 修改裁床件数 / 缸号 / 备注 ---------------- */
 // 改的是分母（这一扎裁了多少件），不碰打点记录（分子）。改到比已完成数还小会让进度
 // 变成"做了 12 件但只裁了 3 件"这种鬼数据，直接拒掉。

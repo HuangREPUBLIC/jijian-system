@@ -33,7 +33,9 @@ let state = {
   bp: null,            // 生产进度详情（一扎的每道工序）
   cp: null,            // 打印菲票设置
   home: { today: 0, mgr: null, emp: null },
-  scan: { date: todayStr(), records: null, eff: null },
+  // 扫菲打点：ticketInput 是手输/扫出来的扎号或菲票号，bundle/bundleOrder/bundleProcs 是查到的那一扎
+  scan: { date: todayStr(), records: null, eff: null,
+    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
   slog: { date: todayStr(), records: null },
@@ -775,11 +777,63 @@ function vHome() {
 }
 
 /* ---------- 打点 ---------- */
+// 摄像头扫码只有 Chrome/安卓的 BarcodeDetector 支持，iOS Safari 没有。
+// 所以按钮按能力渲染，手输扎号/菲票号永远是可用的兜底路径——车间手机型号杂，不能只留一条路。
+const CAN_SCAN = typeof window !== "undefined" && "BarcodeDetector" in window;
+
+function scanBundleHtml() {
+  const sc = state.scan, b = sc.bundle;
+  return `<section class="group">
+    <div class="group-title">扫菲打点</div>
+    <div class="card">
+      <div class="field row"><span>扎号 / 菲票号</span>
+        <input class="in" id="sc-ticket" value="${esc(sc.ticketInput)}" placeholder="扫码或手动输入"
+          inputmode="numeric" onchange="A.setTicketInput(this.value)">
+        <button class="act-btn" onclick="A.lookupTicket()">查找</button>
+        ${CAN_SCAN ? `<button class="act-btn" onclick="A.startCamera()">${sc.camOn ? "关闭摄像头" : "摄像头扫码"}</button>` : ""}</div>
+      ${sc.camOn ? `<div class="field"><video id="scan-cam" class="scan-cam" playsinline muted></video>
+        <div class="row-sub">把菲票上的二维码对准取景框</div></div>` : ""}
+      ${!CAN_SCAN ? `<div class="field"><div class="row-sub">这个浏览器不支持摄像头扫码，请手动输入扎号或菲票号</div></div>` : ""}
+    </div>
+
+    ${b ? `<div class="card style-card" style="margin-top:10px">
+      <div class="sc-head">
+        ${showable(sc.bundleOrder.style_image) ? `<img class="sc-thumb" src="${esc(sc.bundleOrder.style_image)}"
+            onclick="A.lightboxOne(this)" alt="款式图">` : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        <div class="sc-info">
+          <div class="sc-title">扎号 ${b.bundle_no}　菲票 ${b.ticket_no}</div>
+          <div class="sc-grid">
+            <span class="sc-cell"><span class="sc-k">款号：</span><span class="sc-v">${esc(sc.bundleOrder.style_code || sc.bundleOrder.style_name || "—")}</span></span>
+            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${sc.bundleOrder.bed_no}</span></span>
+            <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
+            <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
+            <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="proc-scan">
+        ${sc.bundleProcs.map(p => `<div class="row-item">
+          <div class="row-main"><div class="row-label">${esc(p.name)}${
+            p.show_price && p.unit_price !== null ? ` <span class="row-sub">${num(p.unit_price)}元</span>` : ""}</div>
+            <div class="row-sub">已完成 ${num(p.done)} 件，剩余 ${num(p.remaining)} 件</div></div>
+          <div class="row-acts">
+            ${p.remaining > 0 ? `<input class="in tiny" id="sq-${p.id}" type="number" inputmode="numeric"
+                placeholder="${num(p.remaining)}">
+              <button class="act-btn" onclick="A.scanBundleSubmit('${p.id}')">打点</button>`
+            : `<span class="tag ok">已完成</span>`}
+          </div></div>`).join("")}
+      </div>
+    </div>` : ""}
+  </section>`;
+}
+
 function vScan() {
   const procs = state.processes || [], styles = state.styles || [], eff = state.scan.eff;
   const recs = state.scan.records;
   const pct = eff && eff.percent !== null && eff.percent !== undefined ? eff.percent : null;
-  return `<section class="group"><div class="card">
+  return scanBundleHtml() + `<section class="group">
+    <div class="group-title">自由打点（不按菲票）</div>
+    <div class="card">
       <label class="field"><span>日期</span>${dateFieldHtml("sc-date", state.scan.date, "A.setScanDate(this.value)")}</label>
       <label class="field"><span>工序<span class="req">*</span></span>
         ${procs.length ? selectHtml("sc-proc", procs.map(p => [p.id, p.name]), (procs[0] || {}).id)
@@ -803,8 +857,13 @@ function vScan() {
     <div class="group-title">当天打点记录</div>
     <div class="card">${recs === null ? `<div class="empty">加载中…</div>` : recs.length ? recs.map(r => {
         const p = (state.processes || []).find(x => x.id === r.process_id);
+        const name = r.process_name || (p ? p.name : "工序");
+        // 扫扎产生的记录带扎号/颜色/尺码，自由打点的没有，两种都要能读
+        const sub = r.bundle_no
+          ? `扎号 ${r.bundle_no}${r.color ? " · " + esc(r.color) : ""}${r.size ? " · " + esc(r.size) : ""}`
+          : "自由打点";
         return `<div class="row-item">
-          <div class="row-main"><div class="row-label">${esc(p ? p.name : r.process_id)}</div>
+          <div class="row-main"><div class="row-label">${esc(name)}<span class="row-sub"> ${sub}</span></div>
             <div class="row-sub num">${num(r.qty)} 件</div></div>
           <div class="row-acts"><button class="act-btn danger" onclick="A.delScan('${r.id}')">删除</button></div></div>`;
       }).join("") : `<div class="empty">这天还没有打点记录</div>`}</div>
@@ -2002,6 +2061,74 @@ const A = {
     const k = regGallery([el.getAttribute("src")]);
     el.setAttribute("data-gallery", k); el.setAttribute("data-i", "0");
     A.lightboxFromEl(el);
+  },
+
+  /* ---------- 扫菲打点（按扎） ---------- */
+  setTicketInput(v) { state.scan.ticketInput = v; },
+  async lookupTicket() {
+    // DOM 里有值就以 DOM 为准（用户刚打的字还没失焦）；DOM 是空的就用 state
+    // ——摄像头扫到码时是直接写 state 的，不能被空输入框清掉
+    const el = $("sc-ticket");
+    if (el && el.value.trim()) state.scan.ticketInput = el.value;
+    // 扫出来的是 JJ:36440 这种带前缀的，手输的可能只有数字，两种都收
+    const raw = String(state.scan.ticketInput || "").trim().replace(/^JJ:/i, "");
+    if (!raw) return toast("请输入扎号或菲票号");
+    try {
+      const r = await api("GET", "/bundles/by-ticket/" + encodeURIComponent(raw));
+      state.scan.bundle = r.bundle; state.scan.bundleOrder = r.order; state.scan.bundleProcs = r.processes;
+    } catch (e) {
+      state.scan.bundle = null; state.scan.bundleOrder = null; state.scan.bundleProcs = null;
+      toast((e && e.error) || "查不到这张菲票");
+    }
+    render();
+  },
+  async scanBundleSubmit(orderProcessId) {
+    const el = $("sq-" + orderProcessId);
+    const raw = el ? el.value.trim() : "";
+    try {
+      await api("POST", "/scan", {
+        ticketNo: state.scan.bundle.ticket_no, orderProcessId,
+        qty: raw === "" ? undefined : Number(raw),   // 不填就是完成整扎剩余
+        date: state.scan.date
+      });
+      toast("已打点");
+      await A.lookupTicket();          // 重新拉一次，剩余件数立刻刷新
+      await loadView("scan"); render();
+    } catch (e) { toast((e && e.error) || "打点失败"); }
+  },
+  async startCamera() {
+    const sc = state.scan;
+    if (sc.camOn) { A.stopCamera(); return; }
+    sc.camOn = true; render();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      A._camStream = stream;
+      const video = $("scan-cam");
+      if (!video) { A.stopCamera(); return; }
+      video.srcObject = stream; await video.play();
+      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+      const tick = async () => {
+        if (!state.scan.camOn || !video.srcObject) return;
+        try {
+          const codes = await det.detect(video);
+          const hit = codes.find(c => /^JJ:\d+$/i.test(c.rawValue || ""));
+          if (hit) {
+            state.scan.ticketInput = hit.rawValue.replace(/^JJ:/i, "");
+            A.stopCamera();
+            return A.lookupTicket();
+          }
+        } catch (e) { /* 单帧识别失败无所谓，下一帧继续 */ }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (e) {
+      A.stopCamera();
+      toast("打不开摄像头，请检查权限，或直接手动输入扎号");
+    }
+  },
+  stopCamera() {
+    if (A._camStream) { A._camStream.getTracks().forEach(t => t.stop()); A._camStream = null; }
+    state.scan.camOn = false; render();
   },
 
   /* ---------- 打印菲票 ---------- */

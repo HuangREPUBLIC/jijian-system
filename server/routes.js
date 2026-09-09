@@ -477,10 +477,22 @@ router.get("/scan", A.authRequired, async (req, res) => {
   let userId = req.query.userId;
   if (!userId) userId = req.user.id;
   if (userId !== req.user.id && !A.canActAsAdmin(req.user)) return res.status(403).json({ error: "没有权限查看他人记录" });
+  // 带出可读的工序名：扫扎产生的记录 process_id 指向 jj_style_processes，
+  // 在 jj_processes 里没有对应行，只查工序模板的话前端只能显示一串 id。
+  const SEL = `SELECT r.*, cop.name AS cop_name, sp.name AS sp_name, p.name AS proc_name,
+      b.bundle_no, b.ticket_no, b.color, b.size
+    FROM jj_scan_records r
+    LEFT JOIN jj_cut_order_processes cop ON cop.id = r.order_process_id
+    LEFT JOIN jj_style_processes sp ON sp.id = r.process_id
+    LEFT JOIN jj_processes p ON p.id = r.process_id
+    LEFT JOIN jj_cut_bundles b ON b.id = r.bundle_id
+    WHERE r.user_id = ?`;
   const rows = date
-    ? await db.prepare("SELECT * FROM jj_scan_records WHERE user_id=? AND date=? ORDER BY created_at DESC").all(userId, date)
-    : await db.prepare("SELECT * FROM jj_scan_records WHERE user_id=? ORDER BY created_at DESC LIMIT 200").all(userId);
-  res.json({ records: rows });
+    ? await db.prepare(SEL + " AND r.date = ? ORDER BY r.created_at DESC").all(userId, date)
+    : await db.prepare(SEL + " ORDER BY r.created_at DESC LIMIT 200").all(userId);
+  res.json({ records: rows.map((r) => Object.assign(r, {
+    process_name: r.cop_name || r.sp_name || r.proc_name || null
+  })) });
 });
 
 router.delete("/scan/:id", A.authRequired, async (req, res) => {
