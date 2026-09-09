@@ -273,6 +273,16 @@ async function call(method, p, token, body) {
   ok(scan3.j.record.user_id === wkId, "记录写在被代打点的计件工名下");
   ok(scan3.j.record.unit_price === 8, "代打点取的是被代打点人(计件工)岗位的分岗单价，不是操作者(管理员)岗位/默认价");
 
+  // —— T10 打印数据：扎号范围与任选扎号 ——
+  const pdAll = await call("GET", `/cut-orders/${orderId}/print-data`, aT);
+  ok(pdAll.status === 200 && pdAll.j.bundles.length === 4, "不给范围就是全部扎");
+  ok(pdAll.j.bundles[0].qrSvg && pdAll.j.bundles[0].qrSvg.startsWith("<svg"), "每扎带内联二维码 SVG");
+  const pdRange = await call("GET", `/cut-orders/${orderId}/print-data?from=2&to=3`, aT);
+  ok(pdRange.j.bundles.map(b => b.bundle_no).join(",") === "2,3", "按扎号范围过滤");
+  const pdPicks = await call("GET", `/cut-orders/${orderId}/print-data?picks=1,4`, aT);
+  ok(pdPicks.j.bundles.map(b => b.bundle_no).join(",") === "1,4", "任选扎号打印，picks 覆盖 from/to");
+  ok((await call("GET", `/cut-orders/${orderId}/print-data`, wT)).status === 403, "计件工不能取打印数据");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

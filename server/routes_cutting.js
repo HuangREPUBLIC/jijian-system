@@ -15,6 +15,7 @@ const { planBundles, duplicateBundleNos } = require("./cutting");
 const { visibleTo } = require("./pricing");
 const { logOp } = require("./oplog");
 const { cnDayStr } = require("./daytime");
+const { qrSvg } = require("./qr");
 
 const router = express.Router();
 // 跟 routes.js 一样包一层 async 异常捕获（express4 不会自动捕获 async handler 的 reject）
@@ -458,6 +459,39 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
   const doneByStyle = {};
   orderRows.forEach((o) => (doneByStyle[o.style_id] = (doneByStyle[o.style_id] || 0) + (done[o.id] || 0)));
   res.json({ list: rows.map((r) => Object.assign(r, { completed_qty: doneByStyle[r.style_id] || 0 })) });
+});
+
+/* ---------------- 打印数据 ----------------
+ * 不做服务端直出打印页：本系统鉴权是 Authorization: Bearer（token 在 localStorage），
+ * window.open 出来的新窗口带不上这个头，直出页面必然 401。所以这里只给数据 + 二维码，
+ * 前端在 SPA 里渲染到 #print-root，@media print 只显示它，再 window.print()。
+ * 份数/旋转180°/逐个备注 都是纯前端渲染参数，不进这个请求。
+ */
+router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, async (req, res) => {
+  const order = await db.prepare(
+    `SELECT o.*, s.name AS style_name, s.code AS style_code
+     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+  if (!order) return res.status(404).json({ error: "裁床单不存在" });
+
+  let bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
+  const picks = String(req.query.picks || "").split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
+  if (picks.length) {
+    const set = new Set(picks);
+    bundles = bundles.filter((b) => set.has(b.bundle_no));
+  } else {
+    const from = req.query.from !== undefined && req.query.from !== "" ? Number(req.query.from) : null;
+    const to = req.query.to !== undefined && req.query.to !== "" ? Number(req.query.to) : null;
+    if (from !== null) bundles = bundles.filter((b) => b.bundle_no >= from);
+    if (to !== null) bundles = bundles.filter((b) => b.bundle_no <= to);
+  }
+  if (!bundles.length) return res.status(400).json({ error: "这个扎号范围里没有菲票" });
+
+  const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
+  // JJ: 前缀用于扫码时区分本系统的码（现场可能同时贴着客户的条码）
+  const withQr = await Promise.all(bundles.map(async (b) =>
+    Object.assign({}, b, { qrSvg: await qrSvg(`JJ:${b.ticket_no}`) })));
+
+  res.json({ order, processes, bundles: withQr });
 });
 
 module.exports = {
