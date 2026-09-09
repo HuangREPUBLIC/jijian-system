@@ -299,6 +299,162 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
   res.json({ ok: true });
 });
 
+/* ---------------- 生产进度：按扎 ---------------- */
+router.get("/cut-orders/:id/progress", A.authRequired, async (req, res) => {
+  const order = await db.prepare(
+    `SELECT o.*, s.name AS style_name, s.code AS style_code
+     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+  if (!order) return res.status(404).json({ error: "裁床单不存在" });
+  const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
+  const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
+  const pm = await progressMap(order.id);
+  const pids = processes.map((p) => p.id);
+  let completed = 0;
+  const list = bundles.map((b) => {
+    const per = pm[b.id] || {};
+    const done = bundleDone(pids, per);
+    completed += done;
+    // 百分比这一栏是"这一扎有几道工序已经整扎做完"，跟"已完成件数"是两个口径，别混
+    const finishedProcs = pids.filter((pid) => (per[pid] || 0) >= b.qty).length;
+    return Object.assign({}, b, {
+      done, perProcess: per,
+      percent: pids.length ? Math.round((finishedProcs / pids.length) * 100) : 0
+    });
+  });
+  res.json({ order, processes, bundles: list, completed_qty: completed });
+});
+
+/* ---------------- 工序进展：按工序 + 颜色/尺码分解 ---------------- */
+router.get("/cut-orders/:id/process-progress", A.authRequired, async (req, res) => {
+  const order = await db.prepare("SELECT * FROM jj_cut_orders WHERE id=? AND deleted=0").get(req.params.id);
+  if (!order) return res.status(404).json({ error: "裁床单不存在" });
+  const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
+  const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=?").all(order.id);
+  const pm = await progressMap(order.id);
+
+  // 颜色+尺码 是分解维度；总数按扎的件数汇总，完成数按打点聚合
+  const totalOf = {};
+  for (const b of bundles) {
+    const k = `${b.color}|${b.size}`;
+    totalOf[k] = (totalOf[k] || 0) + b.qty;
+  }
+  res.json({ processes: processes.map((p) => {
+    const doneOf = {};
+    let done = 0, total = 0;
+    for (const b of bundles) {
+      const k = `${b.color}|${b.size}`;
+      const d = (pm[b.id] || {})[p.id] || 0;
+      doneOf[k] = (doneOf[k] || 0) + d;
+      done += d; total += b.qty;
+    }
+    return {
+      id: p.id, name: p.name, seq: p.seq, unit_price: p.unit_price, show_price: p.show_price !== 0,
+      total, done, remaining: total - done,
+      percent: total > 0 ? Math.round((done / total) * 100) : 0,
+      breakdown: Object.keys(totalOf).map((k) => {
+        const [color, size] = k.split("|");
+        return { color, size, total: totalOf[k], done: doneOf[k] || 0, remaining: totalOf[k] - (doneOf[k] || 0) };
+      })
+    };
+  }) });
+});
+
+/* ---------------- 生产进度详情：一扎的每道工序 ---------------- */
+router.get("/bundles/:id", A.authRequired, async (req, res) => {
+  const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
+  if (!bundle) return res.status(404).json({ error: "菲票不存在" });
+  const order = await db.prepare(
+    `SELECT o.*, s.name AS style_name, s.code AS style_code
+     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=?`).get(bundle.order_id);
+  const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
+  const rows = await db.prepare(
+    "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
+    .all(bundle.id);
+  const doneOf = Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
+  res.json({ bundle, order, processes: processes.map((p) => ({
+    id: p.id, name: p.name, seq: p.seq, unit_price: p.unit_price, show_price: p.show_price !== 0,
+    done: doneOf[p.id] || 0, remaining: bundle.qty - (doneOf[p.id] || 0)
+  })) });
+});
+
+/* ---------------- 修改裁床件数 / 缸号 / 备注 ---------------- */
+// 改的是分母（这一扎裁了多少件），不碰打点记录（分子）。改到比已完成数还小会让进度
+// 变成"做了 12 件但只裁了 3 件"这种鬼数据，直接拒掉。
+router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res) => {
+  const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
+  if (!bundle) return res.status(404).json({ error: "菲票不存在" });
+  const sets = [], args = [];
+  if (req.body.qty !== undefined) {
+    const qty = Number(req.body.qty);
+    if (!(qty > 0)) return res.status(400).json({ error: "裁床件数要大于 0" });
+    const maxDone = await db.prepare(
+      "SELECT COALESCE(MAX(t.done),0) AS m FROM (SELECT SUM(qty) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id) t")
+      .get(bundle.id);
+    if (qty < Number(maxDone.m)) {
+      return res.status(400).json({ error: `不能改到 ${qty} 件，这一扎已经有工序做了 ${maxDone.m} 件` });
+    }
+    sets.push("qty=?"); args.push(qty);
+  }
+  if (req.body.vatNo !== undefined) { sets.push("vat_no=?"); args.push(req.body.vatNo || null); }
+  if (req.body.note !== undefined) { sets.push("note=?"); args.push(req.body.note || null); }
+  if (!sets.length) return res.json({ bundle });
+  args.push(bundle.id);
+  await db.prepare(`UPDATE jj_cut_bundles SET ${sets.join(",")} WHERE id=?`).run(...args);
+
+  // 单头的总件数是冗余列，改了扎要跟着重算，否则列表页显示的总数会跟明细对不上
+  const agg = await db.prepare(
+    "SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM jj_cut_bundles WHERE order_id=?").get(bundle.order_id);
+  await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
+    .run(agg.n, agg.q, bundle.order_id);
+
+  res.json({ bundle: await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(bundle.id) });
+});
+
+/* ---------------- 生产管理概览 ---------------- */
+const dayStr = (d) => d.toISOString().slice(0, 10);
+router.get("/production/overview", A.authRequired, async (req, res) => {
+  const range = req.query.range || "today";
+  const now = new Date();
+  let from, to;
+  if (range === "yesterday") {
+    const y = new Date(now.getTime() - 86400000);
+    from = to = dayStr(y);
+  } else if (range === "month") {
+    from = dayStr(now).slice(0, 8) + "01"; to = dayStr(now);
+  } else {
+    from = to = dayStr(now);
+  }
+  // 已完成件数按"这段时间打点了多少件"算：这是车间关心的日产出，跟单张单的完工口径不是一回事
+  const doneRow = await db.prepare(
+    "SELECT COALESCE(SUM(qty),0) AS q FROM jj_scan_records WHERE date >= ? AND date <= ? AND bundle_id IS NOT NULL")
+    .get(from, to);
+  // 生产中件数 = 还没全部完工的裁床单的总件数
+  const orders = await db.prepare("SELECT id, total_qty FROM jj_cut_orders WHERE deleted=0").all();
+  const done = await completedByOrders(orders.map((o) => o.id));
+  const inProduction = orders.reduce((s, o) => s + ((done[o.id] || 0) < o.total_qty ? o.total_qty : 0), 0);
+  res.json({ range, from, to, completed: Number(doneRow.q) || 0, inProduction });
+});
+
+/* ---------------- 生产明细：按款看 ---------------- */
+router.get("/production/by-style", A.authRequired, async (req, res) => {
+  const { kw, from, to } = req.query;
+  const where = ["o.deleted = 0"], args = [];
+  if (from) { where.push("o.cut_date >= ?"); args.push(from); }
+  if (to) { where.push("o.cut_date <= ?"); args.push(to); }
+  if (kw) { where.push("(s.code LIKE ? OR s.name LIKE ?)"); args.push(`%${kw}%`, `%${kw}%`); }
+  const rows = await db.prepare(`
+    SELECT o.style_id, s.name AS style_name, s.code AS style_code, s.image AS style_image,
+           COUNT(*) AS sheet_count, COALESCE(SUM(o.total_qty),0) AS total_qty
+    FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id
+    WHERE ${where.join(" AND ")} GROUP BY o.style_id ORDER BY total_qty DESC`).all(...args);
+  const orderRows = await db.prepare(
+    `SELECT o.id, o.style_id FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE ${where.join(" AND ")}`).all(...args);
+  const done = await completedByOrders(orderRows.map((o) => o.id));
+  const doneByStyle = {};
+  orderRows.forEach((o) => (doneByStyle[o.style_id] = (doneByStyle[o.style_id] || 0) + (done[o.id] || 0)));
+  res.json({ list: rows.map((r) => Object.assign(r, { completed_qty: doneByStyle[r.style_id] || 0 })) });
+});
+
 module.exports = {
   router, progressMap, bundleDone, completedByOrder, completedByOrders,
   buildSummary, jsonParse, nextTicketRange

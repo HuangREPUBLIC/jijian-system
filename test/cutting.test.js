@@ -213,6 +213,40 @@ async function call(method, p, token, body) {
   // 扎号/菲票号不存在
   ok((await call("POST", "/scan", wT, { ticketNo: 999999999, orderProcessId: procCut.id })).status === 400, "菲票号不存在时报错");
 
+  // —— 生产进度：每扎 / 每工序 ——
+  const prog = await call("GET", `/cut-orders/${so}/progress`, aT);
+  ok(prog.status === 200 && prog.j.bundles.length === 1, "生产进度列出每一扎");
+  // 剪线 10/10、烫工 4/10 → 该扎"已完成数" = min(10,4) = 4
+  ok(prog.j.bundles[0].done === 4, "每扎已完成数 = 各工序完成数的最小值");
+  ok(prog.j.completed_qty === 4, "T12 裁床单已完成件数 = 各扎已完成数之和");
+  // 两道工序（剪线/烫工）里剪线已整扎做完、烫工没有 → 1/2 道工序整扎完工 = 50%
+  // （brief 原断言写的是 0%，跟它自己上一行的注释"两道工序只做完一道"自相矛盾：
+  // 剪线明明已经 10/10 做完了，占比不该是 0。这里按接口文档"已整扎做完的工序数/工序总数"
+  // 的口径改成 50，跟 process-progress 那边算出来的数一致）
+  ok(prog.j.bundles[0].percent === 50, "两道工序只做完一道，完工工序占比 50%");
+
+  const pp = await call("GET", `/cut-orders/${so}/process-progress`, aT);
+  ok(pp.j.processes.length === 2, "工序进展列出两道工序");
+  ok(pp.j.processes[0].total === 10 && pp.j.processes[0].done === 10 && pp.j.processes[0].remaining === 0, "剪线 10/10");
+  ok(pp.j.processes[1].done === 4 && pp.j.processes[1].remaining === 6, "烫工 4/10");
+  ok(pp.j.processes[1].breakdown[0].color === "A" && pp.j.processes[1].breakdown[0].size === "S", "工序进展带颜色/尺码分解");
+
+  const bd = await call("GET", `/bundles/${bundle1.id}`, aT);
+  ok(bd.j.processes.length === 2 && bd.j.processes[1].remaining === 6, "生产进度详情：每道工序剩余件数");
+
+  // —— T9 改裁床件数：不能改到低于已完成数 ——
+  ok((await call("PATCH", `/bundles/${bundle1.id}`, aT, { qty: 3 })).status === 400, "裁床件数不能改到低于已完成数");
+  const okPatch = await call("PATCH", `/bundles/${bundle1.id}`, aT, { qty: 12, vatNo: "G9" });
+  ok(okPatch.status === 200 && okPatch.j.bundle.qty === 12 && okPatch.j.bundle.vat_no === "G9", "改裁床件数与缸号");
+  ok((await call("PATCH", `/bundles/${bundle1.id}`, wT, { qty: 11 })).status === 403, "计件工不能改裁床件数");
+
+  // —— 生产管理概览 ——
+  const ov = await call("GET", "/production/overview?range=month", aT);
+  ok(ov.status === 200 && typeof ov.j.completed === "number" && typeof ov.j.inProduction === "number", "生产概览返回已完成/生产中件数");
+  const byStyle = await call("GET", "/production/by-style?kw=FC3456", aT);
+  ok(byStyle.status === 200 && byStyle.j.list.length >= 1, "按款看有数据");
+  ok(byStyle.j.list[0].sheet_count >= 1 && byStyle.j.list[0].total_qty > 0, "按款看带出裁床单数与总件数");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
