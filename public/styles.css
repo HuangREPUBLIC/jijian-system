@@ -617,3 +617,19 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 /* 细进度条：生产管理的裁床单卡、同步工序弹窗、生产进度页共用 */
 .pbar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
 .pbar i{display:block;height:100%;background:var(--brand);transition:width 200ms var(--ease-out)}
+
+/* ---------- 裁床编菲：颜色×尺码矩阵 ----------
+   手机上一屏放不下 5 个尺码，横向滚动 + 首列（颜色名）冻结 */
+.tbl-wrap.matrix{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.mx-tbl th.mx-head{position:sticky;left:0;z-index:1;background:var(--card);white-space:nowrap}
+.mx-cell{display:flex;flex-direction:column;gap:4px;min-width:88px}
+.mx-cell .in{padding:6px 8px;font-size:var(--fs-sm)}
+.mx-sum{text-align:center;color:var(--ink-2);padding:10px 0 2px;font-size:var(--fs-sm)}
+.sw-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;padding:6px 0 2px}
+.sw-item{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm)}
+.in.tiny{width:78px}
+.field.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+@media (min-width:768px){
+  .tbl-wrap.matrix{overflow-x:visible}
+  .sw-grid{grid-template-columns:repeat(3,1fr)}
+}

@@ -24,6 +24,10 @@ let state = {
   processes: null, styles: null, styleOptions: null, styleKw: "",
   // 生产管理页：range 是概览卡的今日/昨日/本月；tab 是"按裁床单看/按款看"；from/to 是明细的日期区间
   co: { range: "today", tab: "sheet", kw: "", from: "", to: "", dateOpen: false, overview: null, list: null, byStyle: null },
+  // 裁床编菲表单。colors/sizes 的顺序就是矩阵的行列顺序，也就是扎号编号的遍历顺序，
+  // 所以是按点选先后入列的数组，不是集合。
+  cf: null,
+  cv: null,   // 查看裁床单：{ order, bundles, processes, summary }
   home: { today: 0, mgr: null, emp: null },
   scan: { date: todayStr(), records: null, eff: null },
   att: { userId: "", date: todayStr(), records: null },
@@ -235,6 +239,34 @@ async function loadView(v) {
     ]);
     state.styles = s.styles || []; state.processes = p.processes || [];
     state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    return;
+  }
+  if (v === "cutform") {
+    const [s2, o] = await Promise.all([
+      state.styles ? Promise.resolve({ styles: state.styles }) : api("GET", "/styles"),
+      api("GET", "/style-options").catch(() => ({}))
+    ]);
+    state.styles = s2.styles || [];
+    state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    const st = state.styles.find((x) => x.id === route.id);
+    // 换了款式就重建表单；同一个款式来回进出保留用户填了一半的内容
+    if (!state.cf || state.cf.styleId !== route.id) {
+      state.cf = {
+        styleId: route.id, styleName: st ? (st.code || st.name) : "",
+        bedNo: "", docNo: "", customer: (st && st.customer) || "", cutDate: todayStr(), shipDate: "",
+        orderNo: "", bedNote: "", ticketNote: "", companyName: COMPANY_NAME,
+        // 款式上已经填过的尺码/颜色直接带过来，省得每张单重选一遍
+        colors: String((st && st.color) || "").split(",").map(x => x.trim()).filter(Boolean),
+        sizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
+        cells: {}, startNo: 1,
+        customNo: false, customVat: false, rowCopy: true, colCopy: false, multiple: false, sameBundles: false,
+        bundlesAll: 1, customNos: {}, vatNos: {}
+      };
+    }
+    return;
+  }
+  if (v === "cutview") {
+    state.cv = await api("GET", "/cut-orders/" + route.id);
     return;
   }
   if (v === "cutorders") {
@@ -591,7 +623,7 @@ function render() {
   const views = {
     home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, styleprocs: vStyleProcs, attendance: vAttendance,
     efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
-    notifs: vNotifs, cutorders: vCutOrders
+    notifs: vNotifs, cutorders: vCutOrders, cutform: vCutForm, cutview: vCutView
   };
   app.innerHTML = `
     ${sidebarHtml()}
@@ -1013,6 +1045,184 @@ function vEfficiency() {
   </div></section>`;
 }
 
+
+
+/* ---------- 裁床编菲 ----------
+ * 矩阵：行=颜色、列=尺码。每格两个输入——件数与扎数。
+ * 件数的含义随「倍数模式」变：开=每扎件数；关=该格总件数（后端按扎数平分，余数补最后一扎）。
+ * colors/sizes 数组的顺序 = 矩阵行列顺序 = 扎号编号的遍历顺序（尺码→该尺码第几扎→颜色轮转），
+ * 所以这里用数组按点选先后维护，不能用集合。
+ */
+const CF_SWITCHES = [
+  ["customNo", "自定义扎号"], ["customVat", "自定义缸号"],
+  ["rowCopy", "行复制"], ["colCopy", "列复制"],
+  ["multiple", "倍数模式"], ["sameBundles", "每件扎数相同"]
+];
+const cfKey = (c, z) => c + "|" + z;
+function cfCell(c, z) { return state.cf.cells[cfKey(c, z)] || { input: "", bundles: "" }; }
+function cfCellTotal(c, z) {
+  const cell = cfCell(c, z);
+  const n = Number(cell.bundles) || 0, v = Number(cell.input) || 0;
+  if (!n || v <= 0) return 0;
+  return state.cf.multiple ? v * n : Math.round(v);
+}
+function cfBundleCount() {
+  return state.cf.colors.reduce((t, c) =>
+    t + state.cf.sizes.reduce((x, z) => x + (Number(cfCell(c, z).bundles) || 0), 0), 0);
+}
+// 颜色/尺码的选择：候选来自全局选项池，点一下加进矩阵、再点一下移出
+function cfPickRow(kind) {
+  const cf = state.cf;
+  const all = ((state.styleOptions || {})[kind === "color" ? "colors" : "sizes"]) || [];
+  const cur = kind === "color" ? cf.colors : cf.sizes;
+  const label = kind === "color" ? "添加颜色" : "添加尺码";
+  return `<div class="field"><span>${label}</span>
+    <div class="chips">${all.length ? all.map(v => {
+      const on = cur.includes(v);
+      return `<button type="button" class="chip ${on ? "on" : ""}"
+        onclick="A.cfToggleAxis('${kind}','${encodeURIComponent(v)}')">${esc(v)}${on ? "" : " ＋"}</button>`;
+    }).join("") : `<span class="row-sub">选项池是空的，先去款式表单里新增${kind === "color" ? "颜色" : "尺码"}</span>`}</div></div>`;
+}
+function cfMatrixHtml() {
+  const cf = state.cf;
+  if (!cf.colors.length || !cf.sizes.length) return `<div class="empty">先在上面选好颜色和尺码</div>`;
+  const sizeTotal = (z) => cf.colors.reduce((t, c) => t + cfCellTotal(c, z), 0);
+  const grand = cf.sizes.reduce((t, z) => t + sizeTotal(z), 0);
+  return `<div class="tbl-wrap matrix"><table class="tbl mx-tbl">
+    <tr><th class="mx-head">颜色/尺码</th>${cf.sizes.map(z => `<th>${esc(z)}</th>`).join("")}<th>合计</th></tr>
+    ${cf.colors.map(c => `<tr>
+      <th class="mx-head">${esc(c)}</th>
+      ${cf.sizes.map(z => `<td><div class="mx-cell">
+        <input class="in" type="number" inputmode="numeric" placeholder="${cf.multiple ? "每扎件数" : "件数"}"
+          value="${esc(cfCell(c, z).input)}"
+          onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','input',this.value)">
+        <input class="in" type="number" inputmode="numeric" placeholder="扎数"
+          value="${esc(cfCell(c, z).bundles)}" ${cf.sameBundles ? "disabled" : ""}
+          onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','bundles',this.value)">
+      </div></td>`).join("")}
+      <td class="num">${num(cf.sizes.reduce((t, z) => t + cfCellTotal(c, z), 0))}</td></tr>`).join("")}
+    <tr><th class="mx-head">合计</th>${cf.sizes.map(z => `<td class="num">${num(sizeTotal(z))}</td>`).join("")}
+      <td class="num">${num(grand)}</td></tr>
+  </table></div>
+  <div class="mx-sum">总扎数：<b class="num">${num(cfBundleCount())}</b>　总数：<b class="num">${num(grand)}</b></div>`;
+}
+function vCutForm() {
+  const cf = state.cf;
+  if (!cf) return `<div class="empty">加载中…</div>`;
+  const f = (label, key, ph, req) => `<label class="field"><span>${label}${req ? '<span class="req">*</span>' : ""}</span>
+    <input class="in" id="cf-${key}" value="${esc(cf[key] || "")}" placeholder="${esc(ph || "")}"
+      onchange="A.cfSet('${key}',this.value)"></label>`;
+  return `<section class="group"><div class="card">
+      <div class="row-item"><div class="row-main">
+        <div class="row-label">款号：${esc(cf.styleName || "—")}</div>
+        <div class="row-sub">生成后可在「生产管理」里查看、打印、跟进度</div></div></div>
+    </div></section>
+
+    <section class="group">
+      <div class="group-title">基础信息</div>
+      <div class="card">
+        <label class="field"><span>床次<span class="req">*</span></span>
+          <input class="in" id="cf-bedNo" type="number" inputmode="numeric" value="${esc(cf.bedNo)}"
+            placeholder="第几床" onchange="A.cfSet('bedNo',this.value)"></label>
+        ${f("制单号", "docNo", "请输入制单号")}
+        ${f("客户", "customer", "请输入客户")}
+        <label class="field"><span>裁床日期<span class="req">*</span></span>
+          ${dateFieldHtml("cf-cutDate", cf.cutDate, "A.cfSet('cutDate',this.value)")}</label>
+        <label class="field"><span>发货日期</span>
+          ${dateFieldHtml("cf-shipDate", cf.shipDate, "A.cfSet('shipDate',this.value)")}</label>
+        ${f("订单号", "orderNo", "请输入订单号")}
+        ${f("床次备注", "bedNote", "请输入床次备注")}
+        ${f("菲票备注", "ticketNote", "会印在每张菲票上")}
+        ${f("公司名称", "companyName", "会印在每张菲票上")}
+      </div>
+    </section>
+
+    <section class="group">
+      <div class="group-title">录入裁床表</div>
+      <div class="card">
+        ${cfPickRow("color")}
+        ${cfPickRow("size")}
+      </div>
+      <div class="card" style="margin-top:10px">${cfMatrixHtml()}</div>
+      <div class="card" style="margin-top:10px">
+        <div class="field row"><span>从</span>
+          <input class="in tiny" type="number" inputmode="numeric" value="${esc(cf.startNo)}"
+            onchange="A.cfSetStart(this.value)"><span>扎起</span>
+          <button class="act-btn ghost" onclick="A.cfClear()">清空裁床表</button></div>
+        ${cf.sameBundles ? `<div class="field row"><span>每格扎数</span>
+          <input class="in tiny" type="number" inputmode="numeric" value="${esc(cf.bundlesAll)}"
+            onchange="A.cfSetBundlesAll(this.value)"></div>` : ""}
+        <div class="sw-grid">${CF_SWITCHES.map(([k, label]) => `<div class="sw-item">
+          <button class="sw ${cf[k] ? "on" : ""}" role="switch" aria-checked="${!!cf[k]}"
+            onclick="A.cfToggle('${k}')"><i></i></button><span>${label}</span></div>`).join("")}</div>
+      </div>
+    </section>
+
+    <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn block" onclick="A.cfSubmit()">生成菲票</button></div></section>`;
+}
+
+
+/* ---------- 查看裁床单 ----------
+ * 两张表：裁床汇总表（颜色×尺码的件数矩阵）和裁床编菲表（每一扎的扎号+件数）。
+ * 编菲表按尺码分组，每组两列「扎号 / 数量」，跟纸质表的读法一致。
+ */
+function vCutView() {
+  const d = state.cv;
+  if (!d) return `<div class="empty">加载中…</div>`;
+  const { order: o, bundles, processes, summary: sm } = d;
+
+  // 编菲表：先按 (颜色,尺码) 把扎归堆，同一格里可能有好几扎，列数取最多的那一格
+  const byCell = {};
+  bundles.forEach(b => (byCell[b.color + "|" + b.size] || (byCell[b.color + "|" + b.size] = [])).push(b));
+  const maxPer = Math.max(1, ...Object.values(byCell).map(a => a.length));
+
+  return `<section class="group"><div class="card">
+      <div class="row-item"><div class="row-main">
+        <div class="row-label">款号：${esc(o.style_code || o.style_name || "—")}</div>
+        <div class="row-sub">款名：${esc(o.style_name || "—")}　床次：${o.bed_no}</div>
+        <div class="row-sub">总扎数：${num(o.total_bundles)}　总件数：${num(o.total_qty)}</div>
+        <div class="row-sub">裁床日期：${esc(o.cut_date || "—")}　交货：${esc(o.ship_date || "—")}</div>
+      </div></div>
+      ${processes.length ? `<div class="row-item"><div class="row-main">
+        <div class="row-label">工序（${processes.length} 道）</div>
+        <div class="row-sub">${processes.map(p => esc(p.name) + (p.show_price ? ` ${num(p.unit_price)}元` : "")).join(" · ")}</div>
+      </div></div>` : ""}
+    </div></section>
+
+    <section class="group">
+      <div class="group-title">裁床汇总表</div>
+      <div class="card"><div class="tbl-wrap matrix"><table class="tbl mx-tbl">
+        <tr><th class="mx-head">颜色/尺码</th><th>颜色合计</th>${sm.sizes.map(z => `<th>${esc(z)}</th>`).join("")}</tr>
+        ${sm.colors.map(c => `<tr><th class="mx-head">${esc(c)}</th>
+          <td class="num">${num(sm.colorTotals[c] || 0)}</td>
+          ${sm.sizes.map(z => `<td class="num">${num((sm.matrix[c] || {})[z] || 0)}</td>`).join("")}</tr>`).join("")}
+        <tr><th class="mx-head">尺码合计</th><td class="num">${num(sm.total)}</td>
+          ${sm.sizes.map(z => `<td class="num">${num(sm.sizeTotals[z] || 0)}</td>`).join("")}</tr>
+      </table></div></div>
+    </section>
+
+    <section class="group">
+      <div class="group-title">裁床编菲表</div>
+      <div class="card"><div class="tbl-wrap matrix"><table class="tbl mx-tbl">
+        <tr><th class="mx-head" rowspan="2">颜色/尺码</th>
+          ${sm.sizes.map(z => `<th colspan="${maxPer * 2}">${esc(z)}</th>`).join("")}</tr>
+        <tr>${sm.sizes.map(() => Array.from({ length: maxPer }, () => `<th>扎号</th><th>数量</th>`).join("")).join("")}</tr>
+        ${sm.colors.map(c => `<tr><th class="mx-head">${esc(c)}</th>
+          ${sm.sizes.map(z => {
+            const arr = byCell[c + "|" + z] || [];
+            return Array.from({ length: maxPer }, (_, i) => arr[i]
+              ? `<td class="num">${arr[i].bundle_no}</td><td class="num">${num(arr[i].qty)}</td>`
+              : `<td></td><td></td>`).join("");
+          }).join("")}</tr>`).join("")}
+      </table></div></div>
+    </section>
+
+    <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn block" onclick="go('cutprogress','${o.id}')">查看生产进度</button>
+      ${isManager() ? `<button class="btn ghost block" onclick="go('cutprint','${o.id}')">打印菲票</button>` : ""}
+    </div></section>`;
+}
 
 /* ---------- 生产管理 ----------
  * 概览卡（今日/昨日/本月已完成 + 当前生产中件数）+ 生产明细（按裁床单看 / 按款看）。
@@ -1547,6 +1757,86 @@ const A = {
     });
   },
   toggleSyncPick(id, on) { if (on) state.syncPick.add(id); else state.syncPick.delete(id); },
+
+  /* ---------- 裁床编菲 ---------- */
+  cfSet(k, v) { state.cf[k] = v; },
+  cfToggleAxis(kind, encV) {
+    const v = decodeURIComponent(encV), cf = state.cf;
+    const arr = kind === "color" ? cf.colors : cf.sizes;
+    const i = arr.indexOf(v);
+    // 移出某一行/列时把它名下的格子一起清掉，免得留下看不见却仍在算总数的脏数据
+    if (i >= 0) {
+      arr.splice(i, 1);
+      Object.keys(cf.cells).forEach(k => {
+        const [c, z] = k.split("|");
+        if ((kind === "color" ? c : z) === v) delete cf.cells[k];
+      });
+    } else arr.push(v);
+    render();
+  },
+  cfSetCell(encC, encZ, field, v) {
+    const c = decodeURIComponent(encC), z = decodeURIComponent(encZ), cf = state.cf;
+    const key = cfKey(c, z);
+    const cell = cf.cells[key] || (cf.cells[key] = { input: "", bundles: "" });
+    cell[field] = v;
+    // 行复制/列复制：填完一格自动把同值铺到该行/该列还空着的格子；两个都开就先行后列
+    const fill = (k2) => {
+      const x = cf.cells[k2] || (cf.cells[k2] = { input: "", bundles: "" });
+      if (x[field] === "" || x[field] === undefined) x[field] = v;
+    };
+    if (cf.rowCopy) cf.sizes.forEach(z2 => fill(cfKey(c, z2)));
+    if (cf.colCopy) cf.colors.forEach(c2 => fill(cfKey(c2, z)));
+    // 扎数如果是"每件扎数相同"模式，改一格等于改全部
+    if (field === "bundles" && cf.sameBundles) A.cfSetBundlesAll(v);
+    render();
+  },
+  cfToggle(k) {
+    state.cf[k] = !state.cf[k];
+    if (k === "sameBundles" && state.cf.sameBundles) A.cfSetBundlesAll(state.cf.bundlesAll);
+    render();
+  },
+  cfSetStart(v) { state.cf.startNo = Math.max(1, Number(v) || 1); render(); },
+  cfSetBundlesAll(v) {
+    const n = Math.max(0, Number(v) || 0), cf = state.cf;
+    cf.bundlesAll = n;
+    cf.colors.forEach(c => cf.sizes.forEach(z => {
+      const k = cfKey(c, z), x = cf.cells[k] || (cf.cells[k] = { input: "", bundles: "" });
+      x.bundles = n;
+    }));
+    render();
+  },
+  cfClear() { state.cf.cells = {}; state.cf.customNos = {}; state.cf.vatNos = {}; render(); },
+  async cfSubmit() {
+    const cf = state.cf;
+    // 输入框用的是 onchange，用户没失焦时 state 还是旧值，提交前从 DOM 兜一次
+    ["bedNo", "docNo", "customer", "orderNo", "bedNote", "ticketNote", "companyName"].forEach(k => {
+      const el = $("cf-" + k); if (el) cf[k] = el.value.trim();
+    });
+    if (!cf.bedNo) return toast("请填写床次");
+    if (!cf.cutDate) return toast("请选择裁床日期");
+    if (!cf.colors.length || !cf.sizes.length) return toast("请选择颜色和尺码");
+    const cells = {};
+    Object.keys(cf.cells).forEach(k => {
+      const c = cf.cells[k];
+      const input = Number(c.input) || 0, bundles = Number(c.bundles) || 0;
+      if (input > 0 && bundles > 0) cells[k] = { input, bundles };
+    });
+    if (!Object.keys(cells).length) return toast("裁床表还没填件数");
+    try {
+      const r = await api("POST", "/cut-orders", {
+        styleId: cf.styleId, bedNo: Number(cf.bedNo), docNo: cf.docNo, customer: cf.customer,
+        cutDate: cf.cutDate, shipDate: cf.shipDate, orderNo: cf.orderNo,
+        bedNote: cf.bedNote, ticketNote: cf.ticketNote, companyName: cf.companyName,
+        colors: cf.colors, sizes: cf.sizes, cells,
+        startNo: cf.startNo, multiple: cf.multiple,
+        customNos: cf.customNo ? cf.customNos : undefined,
+        vatNos: cf.customVat ? cf.vatNos : undefined
+      });
+      toast(`已生成 ${r.order.total_bundles} 张菲票，共 ${num(r.order.total_qty)} 件`);
+      state.cf = null;                 // 用完就丢，下次进来是干净的表单
+      go("cutview", r.order.id);
+    } catch (e) { toast((e && e.error) || "生成失败"); }
+  },
 
   /* ---------- 生产管理 ---------- */
   setCoRange(k) { state.co.range = k; run(() => Promise.resolve()); },
