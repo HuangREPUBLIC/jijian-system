@@ -32,19 +32,28 @@ function parseConf() {
   }
   let database = process.env.MYSQL_DATABASE || process.env.MYSQL_DB || "jijian";
   if (!/^[A-Za-z0-9_]+$/.test(database)) throw new Error("非法的数据库名：" + database);
+  // 本机开发/测试走 unix socket（macOS 上的 MariaDB 给当前系统用户配的是 unix_socket 认证，
+  // 免密）。设了 MYSQL_SOCKET 就用 socket，host/port 忽略；云托管上不会设这个变量，
+  // 连接方式和以前完全一样。
+  const socketPath = process.env.MYSQL_SOCKET || null;
   return {
     host: host || "127.0.0.1",
     port: Number(port || 3306),
     user: process.env.MYSQL_USER || process.env.MYSQL_USERNAME || "root",
     password: process.env.MYSQL_PASSWORD || process.env.MYSQL_PWD || "",
-    database
+    database,
+    socketPath
   };
 }
 const CONF = parseConf();
 
-const pool = mysql.createPool({
-  host: CONF.host,
-  port: CONF.port,
+// host/port 与 socketPath 二选一：mysql2 两个都传会优先走 socket 但保留无用的 host/port，
+// 容易看错实际连法，所以按是否设了 socketPath 显式挑一种传给底层连接。
+const netOrSocket = CONF.socketPath
+  ? { socketPath: CONF.socketPath }
+  : { host: CONF.host, port: CONF.port };
+
+const pool = mysql.createPool(Object.assign({
   user: CONF.user,
   password: CONF.password,
   database: CONF.database,
@@ -53,7 +62,7 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   maxIdle: 10,
   enableKeepAlive: true
-});
+}, netOrSocket));
 
 /**
  * 兼容层：保留原代码 `db.prepare(sql).get/all/run(...positionalArgs)` 的调用形状，
@@ -313,9 +322,9 @@ async function seedRoles() {
 // 启动初始化：建库 → 建表 → 导入 daka → 种子管理员 → 岗位兜底。index.js 在 listen 前 await 调用。
 async function init() {
   // 1. 确保目标库存在（连接时不指定 database）
-  const conn = await mysql.createConnection({
-    host: CONF.host, port: CONF.port, user: CONF.user, password: CONF.password
-  });
+  const conn = await mysql.createConnection(Object.assign({
+    user: CONF.user, password: CONF.password
+  }, netOrSocket));
   await conn.query("CREATE DATABASE IF NOT EXISTS `" + CONF.database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
   await conn.end();
   // 2. 建表
@@ -358,7 +367,8 @@ async function init() {
   await seedRoles();
   // 6. 可选：一次性把老账号的随机密码重置成初始密码
   await resetAllPasswords();
-  console.log(`[db] MySQL 就绪：${CONF.user}@${CONF.host}:${CONF.port}/${CONF.database}`);
+  const connDesc = CONF.socketPath ? `socket:${CONF.socketPath}` : `${CONF.host}:${CONF.port}`;
+  console.log(`[db] MySQL 就绪：${CONF.user}@${connDesc}/${CONF.database}`);
 }
 
 module.exports = { db, pool, uid, getSetting, setSetting, DATA_DIR, UPLOAD_DIR, init };
