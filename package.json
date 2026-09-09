@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.js",
     "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "dev:local": "MYSQL_SOCKET=/tmp/mysql.sock MYSQL_USER=$USER MYSQL_DATABASE=jijian_dev node --env-file-if-exists=.env --watch server/index.js",
+    "seed:demo": "MYSQL_SOCKET=/tmp/mysql.sock MYSQL_USER=$USER MYSQL_DATABASE=jijian_dev node scripts/seed_demo.js",
     "test": "node test/run.js"
   },
   "engines": {
