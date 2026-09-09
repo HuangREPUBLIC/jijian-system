@@ -542,7 +542,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .sc-thumb{width:68px;height:68px;flex:none;border-radius:var(--radius-sm);object-fit:cover;
   background:var(--card-2);cursor:zoom-in}
 /* 没有图时也要占住位置并且看得出来是"图片位"，不然标题会莫名其妙地缩进一块 */
-.sc-noimg{cursor:default;background:var(--bg);box-shadow:inset 0 0 0 1px var(--line)}
+.sc-noimg{cursor:default;background:var(--card-2);box-shadow:inset 0 0 0 1px var(--line)}
 .sc-info{flex:1;min-width:0}
 .sc-title{padding-right:32px;font-size:var(--fs-lg);font-weight:650;letter-spacing:var(--track-title);margin-bottom:6px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -553,7 +553,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .sc-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;
   font-size:var(--fs-sm);line-height:1.35}
 .sc-cell{display:flex;min-width:0;gap:2px}
-.sc-k{color:var(--ink-3);white-space:nowrap;flex:none}
+.sc-k{color:var(--ink-2);white-space:nowrap;flex:none}
 .sc-v{color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 删除图标浮在卡片右上角，不作为 flex 兄弟占宽度——否则它会从下面每一行键值里
    都扣掉 30px，款名一长就被截断 */
@@ -589,7 +589,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .cc-prog{display:flex;align-items:center;gap:8px;padding:0 12px 10px}
 .cc-prog-t{color:var(--warn-ink);font-size:var(--fs-cap);white-space:nowrap}
 .cc-prog .pbar{flex:1;min-width:0}
-.cc-pct{color:var(--ink-3);font-size:var(--fs-cap);white-space:nowrap}
+.cc-pct{color:var(--ink-2);font-size:var(--fs-cap);white-space:nowrap}
 .cut-card .sc-acts{padding:0 12px 12px}
 /* 裁床单卡的右列是日期（比款式卡的"2道/是"长得多），沿用款式卡的 `1fr auto` 会把左列压没，
    所以这里改成两列等宽 */
@@ -605,7 +605,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .daterange{background:var(--card);border-radius:var(--radius);overflow:hidden}
 .dr-btn{width:100%;display:flex;align-items:center;gap:10px;padding:12px 14px;
   border:0;background:transparent;cursor:pointer;text-align:left}
-.dr-label{color:var(--ink-3);font-size:var(--fs-sm);flex:none}
+.dr-label{color:var(--ink-2);font-size:var(--fs-sm);flex:none}
 .dr-val{flex:1;min-width:0;color:var(--ink);font-size:var(--fs-sm);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dr-chev{flex:none;color:var(--ink-3);transition:transform 160ms var(--ease-out)}
@@ -614,7 +614,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .dr-panel{padding:10px 14px 12px;border-top:1px solid var(--line);
   display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;align-items:end}
 .dr-panel .field{padding:0;border:0;gap:4px}
-.dr-panel .field>span{font-size:var(--fs-cap);color:var(--ink-3)}
+.dr-panel .field>span{font-size:var(--fs-cap);color:var(--ink-2)}
 .dr-panel .btn-row{grid-column:1 / -1;padding:0;margin-top:2px}
 /* 弹层里当按钮用的整行 */
 .w-row{width:100%;text-align:left;border:0;background:transparent;cursor:pointer}
@@ -651,7 +651,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .ring-nums{flex:1;min-width:0;display:flex;gap:10px}
 .rn{flex:1;min-width:0;text-align:center}
 .rn-v{font-size:var(--fs-xl);font-weight:650}
-.rn-l{font-size:var(--fs-cap);color:var(--ink-3);margin-top:2px}
+.rn-l{font-size:var(--fs-cap);color:var(--ink-2);margin-top:2px}
 
 /* ---------- 打印菲票 ----------
    #print-root 在屏幕上恒隐藏，只有 @media print 时才显示，其余界面全部隐掉。
