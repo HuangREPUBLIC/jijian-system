@@ -9,7 +9,6 @@
     "pages/scan/scan",
     "pages/attendance/attendance",
     "pages/efficiency/efficiency",
-    "pages/cutting/cutting",
     "pages/payroll/payroll",
     "pages/scanlog/scanlog",
     "pages/operations/operations",

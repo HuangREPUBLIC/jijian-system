@@ -51,7 +51,6 @@ Page({
   goStyles() { wx.navigateTo({ url: "/pages/styles/styles" }); },
   goAttendance() { wx.navigateTo({ url: "/pages/attendance/attendance" }); },
   goEfficiency() { wx.navigateTo({ url: "/pages/efficiency/efficiency" }); },
-  goCutting() { wx.navigateTo({ url: "/pages/cutting/cutting" }); },
   goPayroll() { wx.navigateTo({ url: "/pages/payroll/payroll" }); },
   goScanlog() { wx.navigateTo({ url: "/pages/scanlog/scanlog" }); },
   goOperations() { wx.navigateTo({ url: "/pages/operations/operations" }); }

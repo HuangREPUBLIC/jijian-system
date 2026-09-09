@@ -12,6 +12,8 @@ const express = require("express");
 const { db, pool, uid } = require("./db");
 const A = require("./auth");
 const { planBundles, duplicateBundleNos } = require("./cutting");
+const { visibleTo } = require("./pricing");
+const { logOp } = require("./oplog");
 
 const router = express.Router();
 // 跟 routes.js 一样包一层 async 异常捕获（express4 不会自动捕获 async handler 的 reject）
@@ -24,6 +26,16 @@ for (const m of ["get", "post", "put", "patch", "delete"]) {
 }
 
 const jsonParse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
+
+// 操作日志文案用："款号 床次N" 这种口径，跟旧版裁床单日志风格对齐
+async function styleLabelOf(styleId) {
+  const s = await db.prepare("SELECT code,name FROM jj_styles WHERE id=?").get(styleId);
+  return s ? (s.code || s.name || styleId) : styleId;
+}
+const PATCH_FIELD_LABELS = {
+  docNo: "单号", customer: "客户", cutDate: "裁床日期", shipDate: "出货日期",
+  orderNo: "订单号", bedNote: "床次备注", ticketNote: "菲票备注", companyName: "公司名称"
+};
 
 /* ---------------- 菲票号：全局自增，存在 settings 里 ---------------- */
 // 用连接内的 FOR UPDATE 取号，避免两张单同时生成时撞号。起始 36000 贴近现场纸质票的量级。
@@ -159,6 +171,7 @@ router.post("/cut-orders", A.authRequired, A.managerRequired, async (req, res) =
     conn.release();
   }
 
+  await logOp(req.user.id, `新建裁床单：${style.code || style.name} 床次${bedNo}（${plan.totalBundles}扎 ${plan.totalQty}件）`);
   res.json({
     order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(orderId),
     bundles: await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(orderId)
@@ -168,8 +181,10 @@ router.post("/cut-orders", A.authRequired, A.managerRequired, async (req, res) =
 /* ---------------- 列表 ---------------- */
 router.get("/cut-orders", A.authRequired, async (req, res) => {
   const { kw, from, to, styleId } = req.query;
-  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-  const offset = Math.max(0, Number(req.query.offset) || 0);
+  // 拼进 SQL 字符串前必须先取整：非数字会回落默认值，但 "2.5" 这种能转成数字的非整数
+  // 不会，Math.min/max 夹逼完还是 2.5，拼出 "LIMIT 2.5" 直接 500
+  const limit = Math.floor(Math.min(200, Math.max(1, Number(req.query.limit) || 50)));
+  const offset = Math.floor(Math.max(0, Number(req.query.offset) || 0));
   const where = ["o.deleted = 0"], args = [];
   if (styleId) { where.push("o.style_id = ?"); args.push(styleId); }
   if (from) { where.push("o.cut_date >= ?"); args.push(from); }
@@ -194,7 +209,17 @@ router.get("/cut-orders/:id", A.authRequired, async (req, res) => {
      FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
-  const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
+  let processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
+  // 工价要不要隐藏是给"普通计件工看不看到单价"用的，必须在后端剥掉——前端隐藏字段只是不显示，
+  // 接口原文里还在，改个抓包就能看到，跟 show_price/visible_roles 这两列存在的意义相悖
+  if (!A.isManager(req.user)) {
+    processes = processes.map((p) => {
+      if (p.show_price === 0 || !visibleTo(p, req.user.role)) {
+        return Object.assign({}, p, { unit_price: null, prices: null });
+      }
+      return p;
+    });
+  }
   res.json({ order, bundles, processes, summary: buildSummary(order, bundles) });
 });
 
@@ -213,6 +238,8 @@ router.patch("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, r
   if (!sets.length) return res.json({ order });
   args.push(order.id);
   await db.prepare(`UPDATE jj_cut_orders SET ${sets.join(",")} WHERE id=?`).run(...args);
+  const changedLabels = Object.keys(PATCH_FIELD_LABELS).filter((k) => req.body[k] !== undefined).map((k) => PATCH_FIELD_LABELS[k]);
+  await logOp(req.user.id, `修改裁床单：${await styleLabelOf(order.style_id)} 床次${order.bed_no}（改了：${changedLabels.join("、")}）`);
   res.json({ order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(order.id) });
 });
 
@@ -259,6 +286,7 @@ router.post("/cut-orders/:id/copy", A.authRequired, A.managerRequired, async (re
     await conn.commit();
   } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
 
+  await logOp(req.user.id, `复制裁床单：${await styleLabelOf(src.style_id)} 床次${src.bed_no} → 床次${bedNo}（${srcBundles.length}扎）`);
   res.json({ order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(newId) });
 });
 
@@ -267,6 +295,7 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
   const order = await db.prepare("SELECT * FROM jj_cut_orders WHERE id=? AND deleted=0").get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   await db.prepare("UPDATE jj_cut_orders SET deleted=1 WHERE id=?").run(order.id);
+  await logOp(req.user.id, `删除裁床单：${await styleLabelOf(order.style_id)} 床次${order.bed_no}`);
   res.json({ ok: true });
 });
 

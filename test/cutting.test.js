@@ -119,6 +119,26 @@ async function call(method, p, token, body) {
   ok(tpls.j.list.some(t => t.name === "标准两道" && Array.isArray(t.items)), "模板列表带出 items 数组");
   ok((await call("DELETE", `/process-templates/${tpl.j.template.id}`, aT)).status === 200, "删除工序模板");
 
+  // —— 重号阻断：customNos 跟自动编号混用产生重号，路由层必须拦截 ——
+  // A 格自定义扎号固定为 1，B 格走自动编号也从 1 开始，两者撞在一起（跟纯函数层的
+  // duplicateBundleNos 测试同一个碰撞场景，这里验证的是 POST /cut-orders 这条接线本身）
+  const dupNoBody = {
+    styleId, bedNo: 10, docNo: "dup-1", cutDate: "2026-09-09",
+    colors: ["A", "B"], sizes: ["S"], startNo: 1, multiple: true,
+    customNos: { "A|S": [1] },
+    cells: { "A|S": { input: 10, bundles: 1 }, "B|S": { input: 20, bundles: 1 } }
+  };
+  const dupNoRes = await call("POST", "/cut-orders", aT, dupNoBody);
+  ok(dupNoRes.status === 400, "自定义/自动扎号撞号时返回400");
+  ok(!!(dupNoRes.j && String(dupNoRes.j.error || "").includes("扎号重复")), "错误信息里说明是扎号重复");
+
+  // —— 改单头：PATCH /cut-orders/:id ——
+  const patched = await call("PATCH", `/cut-orders/${orderId}`, aT, { shipDate: "2026-09-20", docNo: "9999" });
+  ok(patched.status === 200, "管理员能改裁床单单头");
+  const afterPatch = await call("GET", `/cut-orders/${orderId}`, aT);
+  ok(afterPatch.j.order.ship_date === "2026-09-20" && afterPatch.j.order.doc_no === "9999", "改完再查，出货日期和单号都变了");
+  ok((await call("PATCH", `/cut-orders/${orderId}`, wT, { docNo: "0000" })).status === 403, "计件工不能改裁床单单头");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

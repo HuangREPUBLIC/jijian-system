@@ -4,6 +4,7 @@ const multer = require("multer");
 const path = require("path");
 const { db, pool, uid, getSetting, setSetting, UPLOAD_DIR } = require("./db");
 const A = require("./auth");
+const { logOp } = require("./oplog");
 const cutting = require("./routes_cutting");
 
 const router = express.Router();
@@ -18,11 +19,6 @@ for (const m of ["get", "post", "put", "patch", "delete", "all"]) {
       ? function (req, res, next) { return Promise.resolve(h(req, res, next)).catch(next); }
       : h
   ));
-}
-
-async function logOp(userId, action) {
-  await db.prepare("INSERT INTO jj_operation_log(id,user_id,action,created_at) VALUES(?,?,?,?)")
-    .run(uid(), userId || null, action, Date.now());
 }
 
 const jsonParseSafe = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
@@ -605,19 +601,25 @@ async function styleProcessList(styleId) {
     SELECT sp.*, p.name AS process_name, p.unit AS process_unit, p.unit_price AS template_price
     FROM jj_style_processes sp LEFT JOIN jj_processes p ON p.id = sp.process_id
     WHERE sp.style_id = ? ORDER BY sp.seq ASC`).all(styleId);
-  return rows.map((r) => ({
-    id: r.id, style_id: r.style_id, process_id: r.process_id, seq: r.seq,
-    name: r.name || r.process_name || "",
-    price_mode: r.price_mode || "default",
-    unit_price: Number(r.unit_price) || 0,
-    prices: jsonParseSafe(r.prices, {}),
-    show_price: r.show_price !== 0,
-    visible_roles: jsonParseSafe(r.visible_roles, []),
-    process_unit: r.process_unit || null,
-    // 列表/合计用的"这道工序的默认价"：自己的价优先，没设过才回落工序模板的价
-    effectivePrice: (r.unit_price !== null && r.unit_price !== undefined)
-      ? Number(r.unit_price) : (Number(r.template_price) || 0)
-  }));
+  return rows.map((r) => {
+    // 生效价：自己设过用自己的，没设过（历史行 unit_price IS NULL）回落工序模板的价
+    const effective = (r.unit_price !== null && r.unit_price !== undefined)
+      ? Number(r.unit_price) : (Number(r.template_price) || 0);
+    return {
+      id: r.id, style_id: r.style_id, process_id: r.process_id, seq: r.seq,
+      name: r.name || r.process_name || "",
+      price_mode: r.price_mode || "default",
+      // unit_price 必须直接给生效价，不能在这里回 NULL/0：前端把它绑进输入框，用户不改动就原样
+      // PUT 回去，若这里返回 0，历史上"没单独设价、靠工序模板兜底"的行会被永久写死成 0（读-改-写要无损）
+      unit_price: effective,
+      prices: jsonParseSafe(r.prices, {}),
+      show_price: r.show_price !== 0,
+      visible_roles: jsonParseSafe(r.visible_roles, []),
+      process_unit: r.process_unit || null,
+      // 列表/合计用的"这道工序的默认价"：跟 unit_price 同值，字段保留给已依赖它的调用方
+      effectivePrice: effective
+    };
+  });
 }
 // 款式工序：工序名可以自由输入（name 列），也可以从工序模板挑（process_id）。
 // 老数据只有 process_id，name 由迁移回填过；这里再兜一次底，免得历史脏数据显示空白。
@@ -630,7 +632,9 @@ router.get("/styles/:id/processes", A.authRequired, async (req, res) => {
 router.put("/styles/:id/processes", A.authRequired, async (req, res) => {
   const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
   if (!style) return res.status(404).json({ error: "款式不存在" });
-  const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  // 没传 items（字段拼错/漏传）跟显式传 [] 必须区分：前者是客户端出错，不能悄悄把全部工序删空
+  if (!req.body || req.body.items === undefined) return res.status(400).json({ error: "缺少工序列表" });
+  const items = Array.isArray(req.body.items) ? req.body.items : [];
   for (const it of items) {
     if (!String(it.name || "").trim()) return res.status(400).json({ error: "工序名称不能为空" });
     if (it.priceMode && !["default", "size", "role"].includes(it.priceMode)) {

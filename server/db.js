@@ -489,6 +489,16 @@ async function init() {
     await pool.query("ALTER TABLE jj_scan_records ADD INDEX idx_jjscan_bundle (bundle_id, order_process_id)");
     console.log("[migrate] jj_scan_records 增加 idx_jjscan_bundle 索引");
   }
+  // 2j. 预先种下菲票号起始值：routes_cutting.js 的 nextTicketRange 用
+  // `SELECT ... FOR UPDATE` 锁 settings 里 jj_ticket_seq 这一行来取号，防止并发建单撞号；
+  // 但 FOR UPDATE 锁的是已存在的行，这行从未插入过时无行可锁，首次并发建单必然出问题。
+  // 用 INSERT IGNORE（不是 setSetting 的 ON DUPLICATE KEY UPDATE）：只在没有这行时插入一次，
+  // 幂等且不会在每次重启时把正在用的计数器冲回 36000。
+  await pool.query(
+    "INSERT IGNORE INTO settings(`key`,value) VALUES(?,?)",
+    ["jj_ticket_seq", JSON.stringify(36000)]
+  );
+
   // 3. 一次性导入 daka 员工（仅生产）
   if (process.env.NODE_ENV !== "test") await importDakaSeed();
   // 4. 种子管理员

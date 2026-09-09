@@ -47,12 +47,6 @@
         <text class="tool-card-label">效率看板</text>
       </view>
     </view>
-    <view class="tool-item" bindtap="goCutting">
-      <view class="tool-card">
-        <image class="tool-icon-img" src="{{icons.cutting}}" mode="aspectFit" />
-        <text class="tool-card-label">生产管理</text>
-      </view>
-    </view>
     <view class="tool-item" wx:if="{{isManager}}" bindtap="goPayroll">
       <view class="tool-card">
         <image class="tool-icon-img" src="{{icons.payroll}}" mode="aspectFit" />
