@@ -171,21 +171,6 @@ select.in{appearance:none;-webkit-appearance:none;
 .act-btn.danger{background:var(--bad-soft);color:var(--bad-ink)}
 .act-btn.ghost{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--ink-2)}
 
-/* 紧凑图标按钮：款式表单里"尺码/颜色/客户"这几个选项池字段的"管理/新增"操作用，
-   比大号文字胶囊按钮更收敛，三个字段并排也不会显得又大又重复 */
-.icn-btn{
-  display:inline-flex;align-items:center;justify-content:center;flex:none;
-  width:28px;height:28px;border-radius:var(--radius-sm);border:0;
-  background:var(--sky-soft);color:var(--blue-2);cursor:pointer;
-  transition:transform 140ms var(--ease-out), background-color 140ms ease;
-}
-.icn-btn:active{transform:scale(0.9)}
-.icn-btn svg{width:15px;height:15px}
-.opt-acts{float:right;display:flex;gap:6px}
-/* 字段标签前的小图标：让"尺码/颜色/客户"三行一眼能分清是哪个字段，不用只靠文字 */
-.opt-label-ic{display:inline-flex;width:14px;height:14px;color:var(--ink-2);margin-right:5px;vertical-align:-2px}
-.opt-label-ic svg{width:14px;height:14px}
-
 /* ---------- 标签 ---------- */
 .tag{display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);font-size:var(--fs-cap);
   background:var(--sky-soft);color:var(--blue-2);white-space:nowrap}
@@ -306,7 +291,8 @@ table.pe-tbl{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
 .opt-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .chip .chip-x{margin-left:4px;border:0;background:transparent;color:inherit;
   font-size:15px;line-height:1;padding:0 2px;cursor:pointer}
-.chip.add{border-style:dashed;color:var(--ink-3)}
+/* "＋ 选择"是这个控件唯一的入口，必须一眼看得见：文字用可读的 --blue-2，不用装饰色 --ink-3 */
+.chip.add{border-style:dashed;color:var(--blue-2)}
 .opt-panel{margin-top:8px;border:1px solid var(--line);border-radius:var(--radius);
   background:var(--card);box-shadow:var(--shadow);padding:8px}
 .opt-search{margin-bottom:6px}
@@ -541,3 +527,93 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
   .msg{transition:opacity 200ms ease}
   .mask.show,.mask.show .modal,.lightbox{animation:fadeIn 150ms ease}
 }
+
+
+/* ---------- 款式卡片 ----------
+   参考小程序的排版：左缩略图 + 右侧"款号(大字) / 款名·工序 / 工价·是否裁床"两组键值，
+   右上角红色删除图标，底部一行四个操作按钮。 */
+.style-card{padding:0;overflow:hidden;position:relative}
+.sc-head{display:flex;gap:10px;padding:14px 12px 10px;align-items:flex-start}
+.sc-thumb{width:68px;height:68px;flex:none;border-radius:var(--radius-sm);object-fit:cover;
+  background:var(--card-2);cursor:zoom-in}
+/* 没有图时也要占住位置并且看得出来是"图片位"，不然标题会莫名其妙地缩进一块 */
+.sc-noimg{cursor:default;background:var(--bg);box-shadow:inset 0 0 0 1px var(--line)}
+.sc-info{flex:1;min-width:0}
+.sc-title{padding-right:32px;font-size:var(--fs-lg);font-weight:650;letter-spacing:var(--track-title);margin-bottom:6px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 两组键值排成 2×2：左组(款名/工价)比右组(工序/是否裁床)宽，因为款名可能很长；
+   每个格子内部再用 flex 放"标签+取值"，标签不参与压缩，被压缩的永远是取值那一段 */
+/* 右列(工序/是否裁床)按内容取宽度，不参与压缩——否则"是否裁床："标签就把取值挤没了；
+   左列(款名/工价)吃掉剩余宽度，太长的款名在这里省略 */
+.sc-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;
+  font-size:var(--fs-sm);line-height:1.35}
+.sc-cell{display:flex;min-width:0;gap:2px}
+.sc-k{color:var(--ink-3);white-space:nowrap;flex:none}
+.sc-v{color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 删除图标浮在卡片右上角，不作为 flex 兄弟占宽度——否则它会从下面每一行键值里
+   都扣掉 30px，款名一长就被截断 */
+.sc-del{position:absolute;top:10px;right:8px;width:30px;height:30px;
+  display:inline-flex;align-items:center;justify-content:center;
+  border:0;background:transparent;color:var(--bad);cursor:pointer;border-radius:var(--radius-sm);
+  transition:transform 140ms var(--ease-out)}
+.sc-del:active{transform:scale(0.9)}
+.sc-del svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round}
+/* 四个操作按钮一行排满，跟参考系统一致；文字缩到 --fs-cap 才塞得下 375 宽的屏 */
+.sc-acts{display:flex;gap:6px;padding:0 12px 12px}
+.sc-acts button{flex:1 1 0;min-width:0;padding:9px 2px;border-radius:var(--radius-sm);
+  border:1px solid var(--line-2);background:var(--card);color:var(--ink-2);
+  font-size:var(--fs-cap);white-space:nowrap;cursor:pointer;
+  transition:transform 140ms var(--ease-out),background-color 140ms ease}
+.sc-acts button:active{transform:scale(0.97);background:var(--card-2)}
+@media (min-width:768px){
+  .sc-acts button{font-size:var(--fs-sm);padding:9px 10px}
+  .sc-thumb{width:84px;height:84px}
+}
+
+/* 同步工序弹窗里的每一行 */
+.sync-row{align-items:flex-start;gap:10px}
+.sync-row input[type=checkbox]{margin-top:4px;flex:none;width:18px;height:18px}
+
+/* ---------- 生产管理：裁床单卡片 ---------- */
+.cut-card{padding:0;overflow:hidden;position:relative}
+.cc-head{display:flex;gap:10px;padding:14px 12px 8px;align-items:flex-start;cursor:pointer}
+.cc-head .sc-title{padding-right:0}
+.cc-head .chev{flex:none;align-self:center;color:var(--ink-3);font-size:20px;line-height:1}
+/* 进度条那一行：左边文字、右边百分比，中间的条吃掉剩余宽度 */
+.cc-prog{display:flex;align-items:center;gap:8px;padding:0 12px 10px}
+.cc-prog-t{color:var(--warn-ink);font-size:var(--fs-cap);white-space:nowrap}
+.cc-prog .pbar{flex:1;min-width:0}
+.cc-pct{color:var(--ink-3);font-size:var(--fs-cap);white-space:nowrap}
+.cut-card .sc-acts{padding:0 12px 12px}
+/* 裁床单卡的右列是日期（比款式卡的"2道/是"长得多），沿用款式卡的 `1fr auto` 会把左列压没，
+   所以这里改成两列等宽 */
+.cut-card .sc-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);font-size:var(--fs-cap)}
+/* 裁床单卡要塞下两个 10 位日期，缩略图和右侧箭头都让一点宽度出来 */
+.cut-card .sc-thumb{width:58px;height:58px}
+.cut-card .sc-title{font-size:var(--fs-md);margin-bottom:5px}
+/* 两个日期挤在半行里放不下（实测取值要 72px 只分到 50px），干脆让它们独占一整行 */
+.sc-dates{grid-column:1 / -1;align-items:baseline;gap:5px}
+.sc-arrow{color:var(--ink-3);flex:none}
+/* 日期区间筛选：平时只是一行可点的文字（"裁床日期  全部日期 ⌄"），
+   点开才展开两个日期控件——两个大灰色"选择日期"框常驻太占地方也太重 */
+.daterange{background:var(--card);border-radius:var(--radius);overflow:hidden}
+.dr-btn{width:100%;display:flex;align-items:center;gap:10px;padding:12px 14px;
+  border:0;background:transparent;cursor:pointer;text-align:left}
+.dr-label{color:var(--ink-3);font-size:var(--fs-sm);flex:none}
+.dr-val{flex:1;min-width:0;color:var(--ink);font-size:var(--fs-sm);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dr-chev{flex:none;color:var(--ink-3);transition:transform 160ms var(--ease-out)}
+.dr-chev.up{transform:rotate(180deg)}
+/* 起止两个日期并排，面板高度直接减半；「清除日期」跨满整行放在下面 */
+.dr-panel{padding:10px 14px 12px;border-top:1px solid var(--line);
+  display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;align-items:end}
+.dr-panel .field{padding:0;border:0;gap:4px}
+.dr-panel .field>span{font-size:var(--fs-cap);color:var(--ink-3)}
+.dr-panel .btn-row{grid-column:1 / -1;padding:0;margin-top:2px}
+/* 弹层里当按钮用的整行 */
+.w-row{width:100%;text-align:left;border:0;background:transparent;cursor:pointer}
+
+/* 细进度条：生产管理的裁床单卡、同步工序弹窗、生产进度页共用 */
+.pbar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--brand);transition:width 200ms var(--ease-out)}

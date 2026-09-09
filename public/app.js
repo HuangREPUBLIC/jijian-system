@@ -21,7 +21,9 @@ let state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   me: null,
   users: null, roles: null,
-  processes: null, styles: null, styleOptions: null,
+  processes: null, styles: null, styleOptions: null, styleKw: "",
+  // 生产管理页：range 是概览卡的今日/昨日/本月；tab 是"按裁床单看/按款看"；from/to 是明细的日期区间
+  co: { range: "today", tab: "sheet", kw: "", from: "", to: "", dateOpen: false, overview: null, list: null, byStyle: null },
   home: { today: 0, mgr: null, emp: null },
   scan: { date: todayStr(), records: null, eff: null },
   att: { userId: "", date: todayStr(), records: null },
@@ -146,8 +148,8 @@ const ICONS = {
   scan: `<path d="M4 8V5.3A1.3 1.3 0 015.3 4H8M20 8V5.3A1.3 1.3 0 0018.7 4H16M4 16v2.7A1.3 1.3 0 005.3 20H8M20 16v2.7a1.3 1.3 0 01-1.3 1.3H16"/><path d="M8 12h8"/>`,
   mine: `<circle cx="12" cy="8" r="3.6"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/>`,
   bell: `<path d="M6 9.5a6 6 0 0 1 12 0c0 4 1.4 5.6 1.4 5.6H4.6S6 13.5 6 9.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/>`,
+  trash: `<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5"/>`,
   plus: `<path d="M12 5v14M5 12h14"/>`,
-  gear: `<circle cx="12" cy="12" r="3"/><path d="M19.4 14a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H4a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H10a1.6 1.6 0 0 0 1-1.5V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V10a1.6 1.6 0 0 0 1.5 1H20a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>`
 };
 const icon = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k]}</svg>`;
@@ -233,6 +235,20 @@ async function loadView(v) {
     ]);
     state.styles = s.styles || []; state.processes = p.processes || [];
     state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    return;
+  }
+  if (v === "cutorders") {
+    const co = state.co;
+    const q = new URLSearchParams();
+    if (co.kw) q.set("kw", co.kw);
+    if (co.from) q.set("from", co.from);
+    if (co.to) q.set("to", co.to);
+    const [ov, list, byStyle] = await Promise.all([
+      api("GET", "/production/overview?range=" + co.range).catch(() => ({ completed: 0, inProduction: 0 })),
+      api("GET", "/cut-orders?" + q).catch(() => ({ list: [], total: 0 })),
+      api("GET", "/production/by-style?" + q).catch(() => ({ list: [] }))
+    ]);
+    co.overview = ov; co.list = list.list || []; co.total = list.total || 0; co.byStyle = byStyle.list || [];
     return;
   }
   if (v === "styleprocs") {
@@ -468,7 +484,10 @@ function selectHtml(id, opts, cur, onChange, placeholder) {
 }
 
 /* ================= 路由与渲染 ================= */
-const SUB_VIEWS = { processes: "home", styles: "home", styleprocs: "home", attendance: "home", efficiency: "home", scanlog: "home", payroll: "home", notifs: "mine" };
+const SUB_VIEWS = { processes: "home", styles: "home", styleprocs: "home", attendance: "home", efficiency: "home",
+  scanlog: "home", payroll: "home", notifs: "mine",
+  cutorders: "home", cutform: "styles", cutview: "cutorders", cutprint: "cutorders",
+  cutprogress: "cutorders", bundleprogress: "cutprogress", procprogress: "cutprogress" };
 function go(v, id) {
   route = { v, id: id || null };
   lightbox = null; renderLightbox();
@@ -485,7 +504,9 @@ function pageMeta() {
   const T = {
     home: "首页", scan: "打点", mine: "我的", admin: "管理",
     processes: "工序模板", styles: "款式管理", styleprocs: "修改工序", attendance: "考勤录入",
-    efficiency: "效率看板", cutting: "生产管理", scanlog: "扫菲记录", payroll: "薪资管理", notifs: "消息通知"
+    efficiency: "效率看板", scanlog: "扫菲记录", payroll: "薪资管理", notifs: "消息通知",
+    cutorders: "生产管理", cutform: "裁床编菲", cutview: "查看裁床单", cutprint: "打印菲票",
+    cutprogress: "生产进度", bundleprogress: "生产进度详情", procprogress: "工序进展"
   };
   const parent = SUB_VIEWS[route.v];
   return {
@@ -516,6 +537,7 @@ function sidebarHtml() {
     ["总览", [["home", "首页", "home"]]],
     ["生产", [
       ["scan", "打点", "scan"], ["processes", "工序模板", "processes"], ["styles", "款式管理", "styles"],
+      ["cutorders", "生产管理", "cutting"],
       ...(isManager() ? [["attendance", "考勤录入", "attendance"]] : []), ["efficiency", "效率看板", "efficiency"],
       ["scanlog", "扫菲记录", "scanlog"]
     ]],
@@ -569,7 +591,7 @@ function render() {
   const views = {
     home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, styleprocs: vStyleProcs, attendance: vAttendance,
     efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
-    notifs: vNotifs
+    notifs: vNotifs, cutorders: vCutOrders
   };
   app.innerHTML = `
     ${sidebarHtml()}
@@ -670,6 +692,7 @@ function vHome() {
       <div class="tools-grid">
         ${tool("processes", "工序模板", "processes")}
         ${tool("styles", "款式管理", "styles")}
+        ${tool("cutorders", "生产管理", "cutting")}
         ${isManager() ? tool("attendance", "考勤录入", "attendance") : ""}
         ${tool("efficiency", "效率看板", "efficiency")}
         ${tool("scanlog", "扫菲记录", "scanlog")}
@@ -760,25 +783,48 @@ function styleImages(s) {
 function vStyles() {
   if (styleForm) return vStyleForm();
   const list = state.styles;
-  return `<section class="group"><div class="card">
-    ${list === null ? `<div class="empty">加载中…</div>` : list.length ? list.map(s => {
-      const imgs = styleImages(s);
-      const cover = imgs.filter(showable)[0];
-      const g = regGallery(imgs.filter(showable));
-      return `<div class="row-item tap" onclick="A.editStyle('${s.id}')">
-        ${cover ? `<img class="thumb-sm" src="${esc(cover)}" data-gallery="${g}" data-i="0"
-          onclick="event.stopPropagation();A.lightboxFromEl(this)" alt="款式图">` : ""}
-        <div class="row-main"><div class="row-label">${esc(s.name)}${s.code ? " · " + esc(s.code) : ""}</div>
-          <div class="row-sub">${[s.size, s.color, s.customer].filter(Boolean).map(esc).join(" · ") || "未填尺码/颜色/客户"}</div></div>
-        <div class="row-acts">
-          <button class="act-btn" onclick="event.stopPropagation();go('styleprocs','${s.id}')">修改工序</button>
-          <button class="act-btn danger" onclick="event.stopPropagation();A.delStyle('${s.id}')">删除</button>
+  const kw = (state.styleKw || "").trim().toLowerCase();
+  // 搜索放在前端做：款式总量是几十到几百条，一次拉全再本地过滤，比每敲一个字打一次接口跟手
+  const shown = list === null ? null : (kw
+    ? list.filter(s => `${s.code || ""} ${s.name || ""}`.toLowerCase().includes(kw))
+    : list);
+  return `<div class="searchbar"><input id="st-kw" placeholder="请输入款号 / 款名" value="${esc(state.styleKw || "")}"
+      oninput="A.setStyleKw(this.value)"></div>
+
+  ${shown === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+      : shown.length ? shown.map(s => {
+        const imgs = styleImages(s);
+        const cover = imgs.filter(showable)[0];
+        const g = regGallery(imgs.filter(showable));
+        return `<section class="group"><div class="card style-card">
+        <div class="sc-head">
+          ${cover ? `<img class="sc-thumb" src="${esc(cover)}" data-gallery="${g}" data-i="0"
+              onclick="A.lightboxFromEl(this)" alt="款式图">`
+            : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+          <div class="sc-info">
+            <div class="sc-title">款号 ${esc(s.code || "—")}</div>
+            <div class="sc-grid">
+              <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${esc(s.name || "—")}</span></span>
+              <span class="sc-cell"><span class="sc-k">工序：</span><span class="sc-v">${num(s.process_count || 0)} 道</span></span>
+              <span class="sc-cell"><span class="sc-k">工价：</span><span class="sc-v">¥${Number(s.total_price || 0).toFixed(4)}</span></span>
+              <span class="sc-cell"><span class="sc-k">是否裁床：</span><span class="sc-v">${s.has_cutting === 0 ? "否" : "是"}</span></span>
+            </div>
+          </div>
+          <button class="sc-del" title="删除款式" aria-label="删除款式"
+            onclick="A.delStyle('${s.id}')">${icon("trash")}</button>
         </div>
-      </div>`;
-    }).join("") : `<div class="empty">还没有款式</div>`}
-  </div></section>
+        <div class="sc-acts">
+          <button onclick="A.editStyle('${s.id}')">编辑款式</button>
+          <button onclick="go('cutform','${s.id}')">裁床编菲</button>
+          <button onclick="go('styleprocs','${s.id}')">修改工序</button>
+          <button onclick="A.openSyncProcs('${s.id}')">同步工序</button>
+        </div>
+      </div></section>`;
+      }).join("")
+      : `<section class="group"><div class="card"><div class="empty">${kw ? "没有匹配的款式" : "还没有款式"}</div></div></section>`}
+
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
-    <button class="btn block" onclick="A.newStyle()">新增款式</button></div></section>`;
+    <button class="btn block" onclick="A.newStyle()">新建款式</button></div></section>`;
 }
 
 /* ---------- 款式的尺码/颜色/客户选项控件 ----------
@@ -965,6 +1011,97 @@ function vEfficiency() {
         <span class="tag ${x.percent === null ? "role" : x.percent < 1 ? "warn" : "ok"}">${x.percent === null ? "暂无考勤" : pctText(x.percent)}</span>
       </div>`).join("") : `<div class="empty">这个月还没有数据</div>`}
   </div></section>`;
+}
+
+
+/* ---------- 生产管理 ----------
+ * 概览卡（今日/昨日/本月已完成 + 当前生产中件数）+ 生产明细（按裁床单看 / 按款看）。
+ * 已完成件数按"这段时间打点了多少件"算，跟单张单的完工口径不是一回事：
+ * 前者是车间关心的日产出，后者是"这一扎所有工序都过了"才算数。
+ */
+function vCutOrders() {
+  const co = state.co;
+  const ov = co.overview || { completed: 0, inProduction: 0 };
+  const rangeBtn = (k, t) => `<button class="${co.range === k ? "on" : ""}" onclick="A.setCoRange('${k}')">${t}</button>`;
+  const list = co.list, byStyle = co.byStyle;
+  const totalQty = (list || []).reduce((n, o) => n + Number(o.total_qty || 0), 0);
+  const doneQty = (list || []).reduce((n, o) => n + Number(o.completed_qty || 0), 0);
+
+  const orderCard = (o) => {
+    const pct = o.total_qty > 0 ? Math.round((o.completed_qty / o.total_qty) * 100) : 0;
+    return `<section class="group"><div class="card cut-card">
+      <div class="cc-head tap" onclick="go('cutprogress','${o.id}')">
+        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}" alt="款式图">`
+        : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        <div class="sc-info">
+          <div class="sc-title">款号：${esc(o.style_code || o.style_name || "—")}</div>
+          <div class="sc-grid">
+            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
+            <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
+            <span class="sc-cell"><span class="sc-k">类型：</span><span class="sc-v">${o.source === "self" ? "自建" : esc(o.source)}</span></span>
+            <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
+              <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
+          </div>
+        </div>
+        <span class="chev">›</span>
+      </div>
+      <div class="cc-prog"><span class="cc-prog-t">已完成件数 ${num(o.completed_qty)}</span>
+        <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      <div class="sc-acts">
+        ${isManager() ? `<button onclick="A.coMore('${o.id}')">更多</button>` : ""}
+        ${isManager() ? `<button onclick="go('cutprint','${o.id}')">打印菲票</button>` : ""}
+        ${isManager() ? `<button onclick="A.coCopy('${o.id}')">复制</button>` : ""}
+        <button onclick="go('cutview','${o.id}')">查看裁床单</button>
+      </div>
+    </div></section>`;
+  };
+
+  return `<div class="ov-card">
+      <div class="ov-tabs">${rangeBtn("today", "今日")}${rangeBtn("yesterday", "昨日")}${rangeBtn("month", "本月")}</div>
+      <div class="ov-label">已完成件数</div>
+      <div class="ov-value num">${num(ov.completed)}</div>
+      <div class="ov-sub">当前生产中件数 ${num(ov.inProduction)} 件</div>
+    </div>
+
+    <section class="group">
+      <div class="group-title">生产明细</div>
+      <div class="seg">
+        <button class="${co.tab === "sheet" ? "on" : ""}" onclick="A.setCoTab('sheet')">按裁床单看</button>
+        <button class="${co.tab === "style" ? "on" : ""}" onclick="A.setCoTab('style')">按款看</button>
+      </div>
+      <div class="searchbar"><input id="co-kw" placeholder="请输入款号 / 床次" value="${esc(co.kw)}"
+        oninput="A.setCoKw(this.value)"></div>
+      <div class="daterange">
+        <button class="dr-btn" onclick="A.toggleCoDate()">
+          <span class="dr-label">裁床日期</span>
+          <span class="dr-val">${co.from || co.to ? `${esc(co.from || "不限")} ~ ${esc(co.to || "不限")}` : "全部日期"}</span>
+          <span class="dr-chev${co.dateOpen ? " up" : ""}">⌄</span>
+        </button>
+        ${co.dateOpen ? `<div class="dr-panel">
+          <label class="field"><span>起</span>${dateFieldHtml("co-from", co.from, "A.setCoDate('from',this.value)")}</label>
+          <label class="field"><span>止</span>${dateFieldHtml("co-to", co.to, "A.setCoDate('to',this.value)")}</label>
+          <div class="btn-row"><button class="btn ghost mini block" onclick="A.clearCoDate()">清除日期</button></div>
+        </div>` : ""}
+      </div>
+    </section>
+
+    ${co.tab === "sheet" ? `
+      <section class="group"><div class="sum-bar">
+        <div class="sum-item"><div class="sum-num num">${(list || []).length}</div><div class="sum-label">裁床单</div></div>
+        <div class="sum-item"><div class="sum-num num">${num(totalQty)}</div><div class="sum-label">裁床总件数</div></div>
+        <div class="sum-item"><div class="sum-num num">${num(doneQty)}</div><div class="sum-label">已完成件数</div></div>
+      </div></section>
+      ${list === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+      : list.length ? list.map(orderCard).join("")
+        : `<section class="group"><div class="card"><div class="empty">还没有裁床单，去「款式管理」里点「裁床编菲」新建</div></div></section>`}`
+    : `<section class="group"><div class="card">
+        ${byStyle === null ? `<div class="empty">加载中…</div>` : byStyle.length ? byStyle.map(x => `
+          <div class="row-item">
+            <div class="row-main"><div class="row-label">${esc(x.style_code || x.style_name)}</div>
+              <div class="row-sub">${esc(x.style_name || "")} · ${x.sheet_count} 张裁床单</div></div>
+            <div class="row-value num">${num(x.completed_qty)} / ${num(x.total_qty)}</div>
+          </div>`).join("") : `<div class="empty">暂无数据</div>`}
+      </div></section>`}`;
 }
 
 /* ---------- 扫菲记录 ---------- */
@@ -1367,8 +1504,130 @@ const A = {
   },
 
   /* ---- 款式尺码/颜色/客户 选项控件 ---- */
+  setStyleKw(v) {
+    // 只改 state 不重绘：重绘会让输入框失焦，中文输入法直接被打断
+    state.styleKw = v;
+    clearTimeout(A._stT);
+    A._stT = setTimeout(() => { render(); const el = $("st-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 250);
+  },
+
+  // 同步工序：把款式当前的工序整套推到选中的裁床单上。
+  // 裁床单的工序是下单时的快照，改款式工序默认不影响已建的单（否则改一次价会追溯改掉历史工资），
+  // 所以要在这里显式选床次。
+  async openSyncProcs(styleId) {
+    let r;
+    try { r = await api("GET", `/styles/${styleId}/syncable-orders`); }
+    catch (e) { return toast((e && e.error) || "取裁床单失败"); }
+    const list = r.list || [];
+    if (!list.length) return toast("这个款式还没有裁床单，不需要同步");
+    state.syncPick = new Set(list.map(o => o.id));   // 默认全选，跟参考系统一致
+    state.syncList = list;
+    state.syncStyleId = styleId;
+    A.renderSyncModal();
+  },
+  renderSyncModal() {
+    const html = `<div class="card" style="margin-top:0">${state.syncList.map(o => `
+      <label class="row-item sync-row">
+        <input type="checkbox" ${state.syncPick.has(o.id) ? "checked" : ""}
+          onchange="A.toggleSyncPick('${o.id}',this.checked)">
+        <div class="row-main">
+          <div class="row-label">床次：${o.bed_no}</div>
+          <div class="row-sub">制单号 ${esc(o.doc_no || "—")} · 工序数 ${o.process_count} · 工价 ${num(o.total_price)}</div>
+          <div class="row-sub">裁单日期 ${esc(o.cut_date || "—")} · 已完成件数 ${num(o.completed_qty)}</div>
+          <div class="pbar"><i style="width:${o.percent}%"></i></div>
+        </div>
+      </label>`).join("")}</div>`;
+    modal({
+      title: "选择需要同步的裁床单", html, okText: "同步", onOk: () => {
+        const ids = [...state.syncPick];
+        if (!ids.length) { toast("至少选一张裁床单"); return false; }
+        run(() => api("POST", `/styles/${state.syncStyleId}/processes/sync`, { orderIds: ids }), `已同步 ${ids.length} 张裁床单`);
+        return true;
+      }
+    });
+  },
+  toggleSyncPick(id, on) { if (on) state.syncPick.add(id); else state.syncPick.delete(id); },
+
+  /* ---------- 生产管理 ---------- */
+  setCoRange(k) { state.co.range = k; run(() => Promise.resolve()); },
+  setCoTab(k) { state.co.tab = k; render(); },
+  setCoKw(v) {
+    // 跟款式搜索一样：先只改 state，防抖之后再重绘，否则每敲一个字输入框就失焦
+    state.co.kw = v;
+    clearTimeout(A._coT);
+    A._coT = setTimeout(async () => {
+      await loadView("cutorders"); render();
+      const el = $("co-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
+    }, 300);
+  },
+  toggleCoDate() { state.co.dateOpen = !state.co.dateOpen; render(); },
+  setCoDate(which, v) { state.co[which] = v; run(() => Promise.resolve()); },
+  clearCoDate() { state.co.from = ""; state.co.to = ""; run(() => Promise.resolve()); },
+
+  // 手机上四个操作按钮排不下，把"修改/删除"收进这个二级弹层，跟参考系统一致
+  coMore(id) {
+    const o = (state.co.list || []).find(x => x.id === id);
+    if (!o) return;
+    modal({
+      title: `床次 ${o.bed_no} · ${o.style_code || o.style_name}`,
+      html: `<div class="card" style="margin-top:0">
+        <button class="row-item tap w-row" onclick="A.modalCancel();A.editCutOrder('${id}')">
+          <div class="row-main"><div class="row-label">修改裁床单</div>
+            <div class="row-sub">改制单号 / 客户 / 日期 / 备注</div></div></button>
+        <button class="row-item tap w-row" onclick="A.modalCancel();A.delCutOrder('${id}')">
+          <div class="row-main"><div class="row-label" style="color:var(--bad-ink)">删除裁床单</div>
+            <div class="row-sub">删除后这张单的进度也一并看不到了</div></div></button>
+      </div>`,
+      okText: "取消", onOk: () => true
+    });
+  },
+  async editCutOrder(id) {
+    const o = (state.co.list || []).find(x => x.id === id);
+    if (!o) return;
+    const F = [["docNo", "制单号", o.doc_no], ["customer", "客户", o.customer],
+      ["orderNo", "订单号", o.order_no], ["cutDate", "裁床日期", o.cut_date],
+      ["shipDate", "发货日期", o.ship_date], ["bedNote", "床次备注", o.bed_note],
+      ["ticketNote", "菲票备注", o.ticket_note], ["companyName", "公司名称", o.company_name]];
+    modal({
+      title: "修改裁床单",
+      html: `<div class="card" style="margin-top:0">${F.map(([k, label, v]) => `
+        <label class="field"><span>${esc(label)}</span>
+          <input class="in" id="ce-${k}" value="${esc(v || "")}"></label>`).join("")}</div>`,
+      okText: "保存",
+      onOk: () => {
+        const body = {};
+        F.forEach(([k]) => { const el = $("ce-" + k); if (el) body[k] = el.value.trim(); });
+        run(() => api("PATCH", "/cut-orders/" + id, body), "已保存");
+        return true;
+      }
+    });
+  },
+  delCutOrder(id) {
+    const o = (state.co.list || []).find(x => x.id === id);
+    modal({
+      title: "删除裁床单", danger: true, okText: "删除",
+      body: o ? `确定删除「${o.style_code || o.style_name} · 床次${o.bed_no}」吗？这张单的 ${num(o.total_bundles)} 张菲票和进度都会一起看不到。` : "确定删除吗？",
+      onOk: () => { run(() => api("DELETE", "/cut-orders/" + id), "已删除"); return true; }
+    });
+  },
+  coCopy(id) {
+    const o = (state.co.list || []).find(x => x.id === id);
+    modal({
+      title: "复制成新床次", input: true, value: o ? String((o.bed_no || 0) + 1) : "",
+      okText: "复制",
+      onOk: (v) => {
+        const bedNo = Number(v);
+        if (!(bedNo > 0)) { toast("请填写新的床次"); return false; }
+        // 复制会重新取一批菲票号：复制出来的是另一批实体票，不能跟原单同号
+        run(() => api("POST", `/cut-orders/${id}/copy`, { bedNo }), "已复制");
+        return true;
+      }
+    });
+  },
+
   optOpen(type) { A.syncStyleForm(); const u = state.optUI[type]; u.open = !u.open; u.kw = ""; render(); },
   optSearch(type, kw) {
+    A.syncStyleForm();
     state.optUI[type].kw = kw; render();
     const el = document.querySelector(".optbox.open .opt-search");
     if (el) { el.focus(); el.setSelectionRange(kw.length, kw.length); }
@@ -1417,15 +1676,31 @@ const A = {
   },
 
   /* ---- 工序编辑器（款式表单 与 修改工序页 共用） ---- */
+  // 下面这一串 peXxx 都会触发 render() 整页重绘，而款号/款式名称的输入框没有 onchange，
+  // 不先把 DOM 里的值同步回 state，用户刚打的字会被重绘出来的旧值悄悄覆盖。
   peSetMode(mode) {
+    A.syncStyleForm();
     if (mode !== state.pe.mode && peHasMultiPrices()) return toast("请先删除多单价再改变单价模式");
     state.pe.mode = mode; render();
   },
-  peAdd() { state.pe.items.push({ name: "", unitPrice: 0, prices: {}, showPrice: true, visibleRoles: [] }); render(); },
-  peDel(i) { state.pe.items.splice(i, 1); render(); },
+  peAdd() { A.syncStyleForm(); A.peSyncNames(); state.pe.items.push({ name: "", unitPrice: 0, prices: {}, showPrice: true, visibleRoles: [] }); render(); },
+  peDel(i) { A.syncStyleForm(); A.peSyncNames(); state.pe.items.splice(i, 1); render(); },
+  // 工序名和工价用的也是 onchange，用户没失焦时 state 还是旧值；重绘前先从 DOM 兜一次。
+  // 跟 peCollect() 是同一件事，抽出来给那些"会触发重绘"的 handler 复用。
+  peSyncNames() {
+    const rows = [...document.querySelectorAll(".pe-tbl tr")].slice(1);
+    rows.forEach((tr, i) => {
+      const it = state.pe.items[i]; if (!it) return;
+      const nameEl = tr.querySelector("td:nth-child(3) input");
+      if (nameEl) it.name = nameEl.value;
+      const priceEl = tr.querySelector(".stepper input");
+      if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
+    });
+  },
   peSetName(i, v) { state.pe.items[i].name = v; },
-  peSetPrice(i, v) { state.pe.items[i].unitPrice = Number(v) || 0; render(); },
+  peSetPrice(i, v) { A.syncStyleForm(); state.pe.items[i].unitPrice = Number(v) || 0; render(); },
   peStep(i, d) {
+    A.syncStyleForm(); A.peSyncNames();
     const it = state.pe.items[i];
     it.unitPrice = Math.max(0, Math.round(((Number(it.unitPrice) || 0) + d * 0.1) * 10000) / 10000);
     render();
@@ -1436,7 +1711,7 @@ const A = {
     if (v === "") delete it.prices[k]; else it.prices[k] = Number(v) || 0;
   },
   peSetRolePrice(i, encRole, v) { A.peSetSizePrice(i, encRole, v); },
-  peToggleShow(i) { state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
+  peToggleShow(i) { A.syncStyleForm(); A.peSyncNames(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
   pePickRoles(i) {
     const it = state.pe.items[i];
     const chosen = new Set(it.visibleRoles || []);
@@ -1453,9 +1728,12 @@ const A = {
   async peSaveTemplate() {
     const items = A.peCollect();
     if (!items.length) return toast("还没有工序");
-    modal({ title: "保存为工序模板", input: true, okText: "保存", onOk: async (v) => {
-      const name = String(v || "").trim(); if (!name) return false;
-      await run(() => api("POST", "/process-templates", { name, items }), "模板已保存");
+    // onOk 必须是同步函数：modalOk() 用 `if (keep === false) return` 判断要不要留住弹窗，
+    // async 函数返回的 Promise 永远是真值，空名校验就废了。异步保存放进 run() 里自己跑。
+    modal({ title: "保存为工序模板", input: true, okText: "保存", onOk: (v) => {
+      const name = String(v || "").trim();
+      if (!name) { toast("请填写模板名称"); return false; }
+      run(() => api("POST", "/process-templates", { name, items }), "模板已保存");
       return true;
     } });
   },

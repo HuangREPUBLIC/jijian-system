@@ -50,7 +50,7 @@ async function notifyManagers(text, link, excludeUserId, meta) {
 // 字段名都列出来(超过3个截断+总数)，不再统一说一句看不出改了啥的"修改了XX"。
 // skipValueKeys 给图片这类不适合塞进一句话通知的字段用，只报字段名不带值。
 const PROCESS_FIELD_LABELS = { name: "工序名", unit: "计量单位", stdQty: "标准定额", hourQuota: "小时定额", unitPrice: "单价" };
-const STYLE_FIELD_LABELS = { name: "款式名称", code: "款号", image: "封面图", images: "款式图片", size: "尺码", color: "颜色", customer: "客户" };
+const STYLE_FIELD_LABELS = { name: "款式名称", code: "款号", image: "封面图", images: "款式图片", size: "尺码", color: "颜色", customer: "客户", hasCutting: "是否裁床", note: "款式备注" };
 const PAYROLL_FIELD_LABELS = { mealSubsidy: "餐补", penalty: "扣罚", bonus: "奖金" };
 function changeWhat(labels, body, skipValueKeys) {
   const changedKeys = Object.keys(labels).filter((k) => body[k] !== undefined);
@@ -305,19 +305,27 @@ router.delete("/processes/:id", A.authRequired, async (req, res) => {
 });
 
 /* ---------------- 款式管理 ---------------- */
+// 列表页每张卡要显示"工序：N道 / 工价：¥X"，用子查询一次带出来，
+// 免得前端为了这两个数字再按款逐个拉一次工序接口（N+1）
 router.get("/styles", A.authRequired, async (req, res) => {
-  const list = await db.prepare("SELECT * FROM jj_styles WHERE deleted = 0 ORDER BY created_at DESC").all();
+  const list = await db.prepare(`
+    SELECT s.*,
+      (SELECT COUNT(*) FROM jj_style_processes sp WHERE sp.style_id = s.id) AS process_count,
+      (SELECT COALESCE(SUM(sp.unit_price), 0) FROM jj_style_processes sp WHERE sp.style_id = s.id) AS total_price
+    FROM jj_styles s WHERE s.deleted = 0 ORDER BY s.created_at DESC`).all();
   res.json({ styles: list });
 });
 router.post("/styles", A.authRequired, async (req, res) => {
-  const { name, code, image, images, size, color, customer } = req.body || {};
+  const { name, code, image, images, size, color, customer, hasCutting, note } = req.body || {};
   if (!name) return res.status(400).json({ error: "请填写款式名" });
   if (!code) return res.status(400).json({ error: "请填写款号" });
   const id = uid();
   const imgs = Array.isArray(images) ? images : [];   // 多图：fileID 数组
   const cover = image || imgs[0] || null;             // 封面 = 传入的 image，或第一张
-  await db.prepare("INSERT INTO jj_styles(id,name,code,image,images,size,color,customer,deleted,created_at) VALUES(?,?,?,?,?,?,?,?,0,?)")
-    .run(id, String(name).trim(), String(code).trim(), cover, JSON.stringify(imgs), size || null, color || null, customer || null, Date.now());
+  // 是否裁床默认为"是"：车间绝大多数款都要裁床，不裁床的是少数（外发/来料）
+  await db.prepare("INSERT INTO jj_styles(id,name,code,image,images,size,color,customer,has_cutting,note,deleted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)")
+    .run(id, String(name).trim(), String(code).trim(), cover, JSON.stringify(imgs), size || null, color || null,
+      customer || null, hasCutting === false ? 0 : 1, note || null, Date.now());
   await logOp(req.user.id, `新增款式：${String(name).trim()}`);
   await notifyManagers(`${req.user.name} 新增了款式「${String(name).trim()}」`, "/styles", req.user.id);
   res.json({ style: await db.prepare("SELECT * FROM jj_styles WHERE id=?").get(id) });
@@ -326,7 +334,7 @@ router.patch("/styles/:id", A.authRequired, async (req, res) => {
   const s = await db.prepare("SELECT * FROM jj_styles WHERE id=?").get(req.params.id);
   if (!s || s.deleted) return res.status(404).json({ error: "款式不存在" });
   const body = req.body || {};
-  const { name, code, image, images, size, color, customer } = body;
+  const { name, code, image, images, size, color, customer, hasCutting, note } = body;
   if (name !== undefined) await db.prepare("UPDATE jj_styles SET name=? WHERE id=?").run(String(name).trim(), s.id);
   if (code !== undefined) await db.prepare("UPDATE jj_styles SET code=? WHERE id=?").run(String(code).trim(), s.id);
   if (image !== undefined) await db.prepare("UPDATE jj_styles SET image=? WHERE id=?").run(image, s.id);
@@ -337,6 +345,8 @@ router.patch("/styles/:id", A.authRequired, async (req, res) => {
   if (size !== undefined) await db.prepare("UPDATE jj_styles SET size=? WHERE id=?").run(size, s.id);
   if (color !== undefined) await db.prepare("UPDATE jj_styles SET color=? WHERE id=?").run(color, s.id);
   if (customer !== undefined) await db.prepare("UPDATE jj_styles SET customer=? WHERE id=?").run(customer, s.id);
+  if (hasCutting !== undefined) await db.prepare("UPDATE jj_styles SET has_cutting=? WHERE id=?").run(hasCutting ? 1 : 0, s.id);
+  if (note !== undefined) await db.prepare("UPDATE jj_styles SET note=? WHERE id=?").run(note || null, s.id);
   await logOp(req.user.id, `修改款式：${s.name}`);
   const what = changeWhat(STYLE_FIELD_LABELS, body, ["image", "images"]) || `修改了款式「${s.name}」`;
   await notifyManagers(`${req.user.name} 在「${s.name}」${what}`, "/styles", req.user.id,
