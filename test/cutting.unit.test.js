@@ -1,7 +1,7 @@
 "use strict";
 // 纯函数单测：不起服务、不连库，直接 require 模块跑。
 const path = require("path");
-const { planBundles, cellKey } = require(path.join(__dirname, "..", "server", "cutting"));
+const { planBundles, cellKey, duplicateBundleNos } = require(path.join(__dirname, "..", "server", "cutting"));
 const { resolvePrice, visibleTo } = require(path.join(__dirname, "..", "server", "pricing"));
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log("PASS " + n); } else { fail++; console.log("FAIL " + n); } };
@@ -87,6 +87,64 @@ ok(visibleTo({ visible_roles: null }, "worker") === true, "未限制岗位 = 所
 ok(visibleTo({ visible_roles: "[]" }, "worker") === true, "空数组 = 所有岗位可见");
 ok(visibleTo({ visible_roles: '["tech_lead"]' }, "worker") === false, "限制岗位后其他岗位不可见");
 ok(visibleTo({ visible_roles: '["tech_lead"]' }, "tech_lead") === true, "限制岗位内的岗位可见");
+
+// —— 自定义扎号与自动扎号混用：产生碰撞（已知行为，由调用方拦截）——
+// 这个测试记录 planBundles 的真实行为：当自定义扎号与自动编号共存时，
+// nextNo 计数器不知道 customNos 占用了哪些号，可能产生重复扎号。
+// 算法设计上允许这个碰撞存在，由上层调用方用 duplicateBundleNos 检测并拦截。
+{
+  const k1 = cellKey("A", "S");
+  const k2 = cellKey("B", "S");
+  const r = planBundles({
+    colors: ["A", "B"], sizes: ["S"],
+    cells: {
+      [k1]: { input: 10, bundles: 1 },
+      [k2]: { input: 20, bundles: 1 }
+    },
+    startNo: 1, multiple: true,
+    customNos: { [k1]: [1] }  // A 的扎号固定为 1
+    // B 的扎号走自动编号，从 startNo:1 开始，也会产生 bundleNo=1
+  });
+  const bundleNos = r.bundles.map(b => b.bundleNo);
+  ok(bundleNos.filter(no => no === 1).length === 2, "混用自定义/自动编号时确实产生重号1");
+  ok(r.bundles[0].bundleNo === 1 && r.bundles[0].color === "A", "第一扎是自定义的1（A颜色）");
+  ok(r.bundles[1].bundleNo === 1 && r.bundles[1].color === "B", "第二扎是自动编号的1（B颜色）");
+}
+
+// —— duplicateBundleNos 能检测出重号 ——
+// 把上面混用产生的碰撞结果传给 duplicateBundleNos，应该能准确返回重复的扎号列表
+{
+  const k1 = cellKey("A", "S");
+  const k2 = cellKey("B", "S");
+  const r = planBundles({
+    colors: ["A", "B"], sizes: ["S"],
+    cells: {
+      [k1]: { input: 10, bundles: 1 },
+      [k2]: { input: 20, bundles: 1 }
+    },
+    startNo: 1, multiple: true,
+    customNos: { [k1]: [1] }
+  });
+  const dups = duplicateBundleNos(r.bundles);
+  ok(dups.length === 1, "检测到恰好1个重复扎号");
+  ok(dups[0] === 1, "重复的扎号是1");
+}
+
+// —— duplicateBundleNos 对正常情况不误报 ——
+// 传入没有重号的 bundles，应该返回空数组
+{
+  const r = planBundles({
+    colors: ["A", "B"], sizes: ["S"],
+    cells: {
+      [cellKey("A", "S")]: { input: 10, bundles: 1 },
+      [cellKey("B", "S")]: { input: 20, bundles: 1 }
+    },
+    startNo: 1, multiple: true
+    // 不设 customNos，全走自动编号，不会产生重号
+  });
+  const dups = duplicateBundleNos(r.bundles);
+  ok(dups.length === 0, "正常情况下不误报重号");
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
