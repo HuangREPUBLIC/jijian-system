@@ -26,7 +26,6 @@ let state = {
   scan: { date: todayStr(), records: null, eff: null },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
-  cut: { range: "today", tab: "sheet", kw: "", overview: null, sheets: null, byStyle: null },
   slog: { date: todayStr(), records: null },
   pay: { month: monthStr(), list: null, mine: null, editing: "" },
   empKw: "", empPage: 1,
@@ -40,7 +39,6 @@ let deferredInstall = null;     // 安卓/桌面 Chrome 的原生安装事件
 let notifPanelOpen = false;     // 桌面端顶部铃铛下拉面板是否展开
 let procForm = null;            // 工序模板表单
 let styleForm = null;           // 款式表单
-let sheetForm = null;           // 裁床单表单
 
 const isMobileDevice = () => /iPhone|iPad|iPod|Android|Mobile|HarmonyOS/i.test(navigator.userAgent || "")
   || (navigator.maxTouchPoints > 1 && window.matchMedia && window.matchMedia("(pointer:coarse)").matches);
@@ -248,17 +246,6 @@ async function loadView(v) {
     state.eff.list = (await api("GET", "/efficiency/summary?month=" + state.eff.month)).list || [];
     return;
   }
-  if (v === "cutting") {
-    const q = state.cut.kw.trim() ? "?q=" + encodeURIComponent(state.cut.kw.trim()) : "";
-    const [st, ov, list] = await Promise.all([
-      api("GET", "/styles"),
-      api("GET", "/cutting/overview?range=" + state.cut.range),
-      state.cut.tab === "sheet" ? api("GET", "/cutting-sheets" + q) : api("GET", "/cutting-sheets/by-style" + q)
-    ]);
-    state.styles = st.styles || []; state.cut.overview = ov;
-    if (state.cut.tab === "sheet") state.cut.sheets = list.sheets || []; else state.cut.byStyle = list.list || [];
-    return;
-  }
   if (v === "scanlog") { state.slog.records = (await api("GET", "/scan-all?date=" + state.slog.date)).records || []; return; }
   if (v === "admin") {
     const [u, r] = await Promise.all([api("GET", "/users"), api("GET", "/roles")]);
@@ -457,13 +444,12 @@ function selectHtml(id, opts, cur, onChange, placeholder) {
 }
 
 /* ================= 路由与渲染 ================= */
-const SUB_VIEWS = { processes: "home", styles: "home", attendance: "home", efficiency: "home", cutting: "home", scanlog: "home", payroll: "home", notifs: "mine" };
+const SUB_VIEWS = { processes: "home", styles: "home", attendance: "home", efficiency: "home", scanlog: "home", payroll: "home", notifs: "mine" };
 function go(v, id) {
   route = { v, id: id || null };
   lightbox = null; renderLightbox();
   if (v !== "styles") { styleForm = null; photoDraft = {}; }
   if (v !== "processes") procForm = null;
-  if (v !== "cutting") sheetForm = null;
   render(); window.scrollTo(0, 0);
   // 出错也要重绘一次：loadView 里出错时已经把对应数据清空了，别让页面继续显示上一次的旧内容
   loadView(v).then(render).catch(e => { render(); toast((e && e.error) || "加载失败"); });
@@ -507,7 +493,7 @@ function sidebarHtml() {
     ["生产", [
       ["scan", "打点", "scan"], ["processes", "工序模板", "processes"], ["styles", "款式管理", "styles"],
       ...(isManager() ? [["attendance", "考勤录入", "attendance"]] : []), ["efficiency", "效率看板", "efficiency"],
-      ["cutting", "生产管理", "cutting"], ["scanlog", "扫菲记录", "scanlog"]
+      ["scanlog", "扫菲记录", "scanlog"]
     ]],
     ["系统", [
       ...(isManager() ? [["payroll", "薪资管理", "payroll"], ["admin", "管理", "admin"]] : []),
@@ -558,7 +544,7 @@ function render() {
   const meta = pageMeta();
   const views = {
     home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, attendance: vAttendance,
-    efficiency: vEfficiency, cutting: vCutting, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
+    efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
     notifs: vNotifs
   };
   app.innerHTML = `
@@ -662,7 +648,6 @@ function vHome() {
         ${tool("styles", "款式管理", "styles")}
         ${isManager() ? tool("attendance", "考勤录入", "attendance") : ""}
         ${tool("efficiency", "效率看板", "efficiency")}
-        ${tool("cutting", "生产管理", "cutting")}
         ${tool("scanlog", "扫菲记录", "scanlog")}
         ${isManager() ? tool("payroll", "薪资管理", "payroll") : ""}
         ${isManager() ? tool("admin", "管理", "admin") : ""}
@@ -873,56 +858,6 @@ function vEfficiency() {
         <span class="tag ${x.percent === null ? "role" : x.percent < 1 ? "warn" : "ok"}">${x.percent === null ? "暂无考勤" : pctText(x.percent)}</span>
       </div>`).join("") : `<div class="empty">这个月还没有数据</div>`}
   </div></section>`;
-}
-
-/* ---------- 生产管理（裁床单） ---------- */
-function vCutting() {
-  const ov = state.cut.overview || { completed: 0, inProduction: 0 };
-  const rangeBtn = (k, t) => `<button class="${state.cut.range === k ? "on" : ""}" onclick="A.setCutRange('${k}')">${t}</button>`;
-  const f = sheetForm, styles = state.styles || [];
-  return `<div class="ov-card">
-      <div class="ov-tabs">${rangeBtn("today", "今日")}${rangeBtn("yesterday", "昨日")}${rangeBtn("month", "本月")}</div>
-      <div class="ov-label">已完成件数</div>
-      <div class="ov-value num">${num(ov.completed)}</div>
-      <div class="ov-sub">当前生产中件数 ${num(ov.inProduction)} 件</div>
-    </div>
-
-    <section class="group">
-      <div class="group-title">生产明细</div>
-      <div class="seg">
-        <button class="${state.cut.tab === "sheet" ? "on" : ""}" onclick="A.setCutTab('sheet')">按裁床单看</button>
-        <button class="${state.cut.tab === "style" ? "on" : ""}" onclick="A.setCutTab('style')">按款看</button>
-      </div>
-      <div class="searchbar"><input id="cut-kw" placeholder="搜索款号 / 款名" value="${esc(state.cut.kw)}"
-        oninput="A.setCutKw(this.value)"></div>
-      <div class="card">${state.cut.tab === "sheet" ? (
-      state.cut.sheets === null ? `<div class="empty">加载中…</div>` : state.cut.sheets.length
-        ? state.cut.sheets.map(s => `<div class="row-item">
-            <div class="row-main"><div class="row-label">${esc(s.style_name)} × ${num(s.qty)}</div>
-              <div class="row-sub">该款已完成 ${num(s.style_completed)} 件${s.note ? " · " + esc(s.note) : ""}</div></div>
-            <div class="row-acts"><button class="act-btn danger" onclick="A.delSheet('${s.id}')">删除</button></div></div>`).join("")
-        : `<div class="empty">还没有裁床单</div>`
-    ) : (
-      state.cut.byStyle === null ? `<div class="empty">加载中…</div>` : state.cut.byStyle.length
-        ? state.cut.byStyle.map(x => `<div class="row-item">
-            <div class="row-main"><div class="row-label">${esc(x.style_name)}${x.style_code ? ` (${esc(x.style_code)})` : ""}</div>
-              <div class="row-sub">裁床 ${num(x.total_qty)} 件 · 已完成 ${num(x.completed_qty)} 件 · ${x.sheet_count} 张裁床单</div></div></div>`).join("")
-        : `<div class="empty">暂无数据</div>`
-    )}</div>
-    </section>
-
-    <section class="group">
-      <div class="btn-row" style="padding-left:0;padding-right:0">
-        <button class="btn ${f ? "ghost" : ""} block" onclick="A.toggleSheetForm()">${f ? "取消" : "新增裁床单"}</button></div>
-      ${f ? `<div class="card">
-        <label class="field"><span>款式<span class="req">*</span></span>
-          ${styles.length ? selectHtml("cs-style", styles.map(s => [s.id, s.name + (s.code ? " · " + s.code : "")]), "")
-        : `<div class="row-sub">还没有款式，请先去「款式管理」添加</div>`}</label>
-        <label class="field"><span>数量<span class="req">*</span></span><input class="in" id="cs-qty" type="number" inputmode="decimal" step="any"></label>
-        <label class="field"><span>备注（选填）</span><input class="in" id="cs-note"></label>
-        <div class="btn-row"><button class="btn block" onclick="A.saveSheet()">保存</button></div>
-      </div>` : ""}
-    </section>`;
 }
 
 /* ---------- 扫菲记录 ---------- */
@@ -1175,9 +1110,8 @@ const A = {
     state.scan.records = state.scan.eff = null;
     state.att.userId = ""; state.att.records = null;
     state.eff.list = null; state.slog.records = null;
-    state.cut.overview = state.cut.sheets = state.cut.byStyle = null;
     state.pay.list = state.pay.mine = null; state.pay.editing = "";
-    styleForm = procForm = sheetForm = null; photoDraft = {};
+    styleForm = procForm = null; photoDraft = {};
     localStorage.removeItem(TOKEN_KEY);
     route = { v: "home", id: null }; render();
   },
@@ -1456,33 +1390,6 @@ const A = {
 
   /* ---- 效率 ---- */
   setEffMonth(v) { if (!v) return; state.eff.month = v; state.eff.list = null; go("efficiency"); },
-
-  /* ---- 生产管理 ---- */
-  setCutRange(k) { state.cut.range = k; go("cutting"); },
-  setCutTab(k) { state.cut.tab = k; state.cut.sheets = null; state.cut.byStyle = null; go("cutting"); },
-  setCutKw(v) {
-    state.cut.kw = v; clearTimeout(A._kwT);
-    A._kwT = setTimeout(() => {
-      loadView("cutting").then(() => {
-        render();
-        const el = $("cut-kw"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
-      }).catch(e => toast((e && e.error) || "加载失败"));
-    }, 350);
-  },
-  toggleSheetForm() { sheetForm = sheetForm ? null : {}; render(); },
-  async saveSheet() {
-    if (!(state.styles || []).length) return toast("请先添加款式");
-    const qty = val("cs-qty");
-    if (!qty) return toast("请填写数量");
-    const body = { styleId: val("cs-style"), qty: Number(qty), note: val("cs-note") };
-    await run(() => api("POST", "/cutting-sheets", body).then(() => { sheetForm = null; }), "已新增");
-  },
-  delSheet(id) {
-    modal({
-      title: "删除裁床单", body: "确定删除吗？", danger: true, okText: "删除",
-      onOk: () => run(() => api("DELETE", "/cutting-sheets/" + id), "已删除")
-    });
-  },
 
   /* ---- 扫菲记录 ---- */
   setSlogDate(v) { if (!v) return; state.slog.date = v; state.slog.records = null; go("scanlog"); },

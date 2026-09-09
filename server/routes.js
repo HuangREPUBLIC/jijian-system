@@ -2,8 +2,9 @@
 const express = require("express");
 const multer = require("multer");
 const path = require("path");
-const { db, uid, getSetting, setSetting, UPLOAD_DIR } = require("./db");
+const { db, pool, uid, getSetting, setSetting, UPLOAD_DIR } = require("./db");
 const A = require("./auth");
+const cutting = require("./routes_cutting");
 
 const router = express.Router();
 
@@ -459,87 +460,6 @@ router.get("/efficiency/summary", A.authRequired, async (req, res) => {
   res.json({ month, list });
 });
 
-/* ---------------- 裁床单 / 生产管理 ---------------- */
-function ymd(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-}
-router.get("/cutting-sheets", A.authRequired, async (req, res) => {
-  const q = (req.query.q || "").trim();
-  const rows = await db.prepare(`
-    SELECT c.*, s.name AS style_name, s.code AS style_code,
-      COALESCE((SELECT SUM(r.qty) FROM jj_scan_records r WHERE r.style_id = s.id), 0) AS style_completed
-    FROM jj_cutting_sheets c JOIN jj_styles s ON s.id = c.style_id
-    WHERE c.deleted = 0
-    ${q ? "AND (s.name LIKE ? OR s.code LIKE ?)" : ""}
-    ORDER BY c.created_at DESC
-  `).all(...(q ? [`%${q}%`, `%${q}%`] : []));
-  res.json({ sheets: rows });
-});
-// 按款汇总：同一款式多张裁床单合并统计（裁床总量 = 该款所有未删除裁床单之和，已完成 = 该款所有打点记录之和）
-router.get("/cutting-sheets/by-style", A.authRequired, async (req, res) => {
-  const q = (req.query.q || "").trim();
-  const rows = await db.prepare(`
-    SELECT s.id AS style_id, s.name AS style_name, s.code AS style_code,
-      COALESCE((SELECT SUM(c.qty) FROM jj_cutting_sheets c WHERE c.style_id = s.id AND c.deleted = 0), 0) AS total_qty,
-      COALESCE((SELECT SUM(r.qty) FROM jj_scan_records r WHERE r.style_id = s.id), 0) AS completed_qty,
-      (SELECT COUNT(*) FROM jj_cutting_sheets c WHERE c.style_id = s.id AND c.deleted = 0) AS sheet_count
-    FROM jj_styles s
-    WHERE s.deleted = 0
-      AND EXISTS (SELECT 1 FROM jj_cutting_sheets c WHERE c.style_id = s.id AND c.deleted = 0)
-      ${q ? "AND (s.name LIKE ? OR s.code LIKE ?)" : ""}
-    ORDER BY s.created_at DESC
-  `).all(...(q ? [`%${q}%`, `%${q}%`] : []));
-  res.json({ list: rows });
-});
-// 生产管理首页统计卡：已完成件数按今日/昨日/本月的打点总量算，生产中件数是当前时点的快照（不分日期）＝ 裁床总量－全部历史已完成
-router.get("/cutting/overview", A.authRequired, async (req, res) => {
-  const range = req.query.range === "yesterday" || req.query.range === "month" ? req.query.range : "today";
-  let pattern, like;
-  if (range === "yesterday") {
-    const d = new Date(); d.setDate(d.getDate() - 1);
-    pattern = ymd(d); like = false;
-  } else if (range === "month") {
-    const d = new Date();
-    pattern = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "%"; like = true;
-  } else {
-    pattern = ymd(new Date()); like = false;
-  }
-  const completed = (await db.prepare(`SELECT COALESCE(SUM(qty),0) AS v FROM jj_scan_records WHERE date ${like ? "LIKE ?" : "= ?"}`).get(pattern)).v;
-  const totalCut = (await db.prepare("SELECT COALESCE(SUM(qty),0) AS v FROM jj_cutting_sheets WHERE deleted=0").get()).v;
-  const totalDone = (await db.prepare("SELECT COALESCE(SUM(qty),0) AS v FROM jj_scan_records").get()).v;
-  res.json({ range, completed, inProduction: Math.max(0, totalCut - totalDone) });
-});
-router.post("/cutting-sheets", A.authRequired, async (req, res) => {
-  const { styleId, qty, note } = req.body || {};
-  if (!styleId || !qty) return res.status(400).json({ error: "请选择款式并填写数量" });
-  const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(styleId);
-  if (!style) return res.status(400).json({ error: "款式不存在" });
-  const id = uid();
-  await db.prepare("INSERT INTO jj_cutting_sheets(id,style_id,qty,note,deleted,created_at) VALUES(?,?,?,?,0,?)")
-    .run(id, styleId, Number(qty), note || null, Date.now());
-  await logOp(req.user.id, `新增裁床单：${style.name} × ${qty}`);
-  await notifyManagers(`${req.user.name} 新增了裁床单「${style.name} × ${qty}」`, "/cutting", req.user.id);
-  res.json({ sheet: await db.prepare("SELECT c.*, s.name AS style_name, s.code AS style_code FROM jj_cutting_sheets c JOIN jj_styles s ON s.id=c.style_id WHERE c.id=?").get(id) });
-});
-router.patch("/cutting-sheets/:id", A.authRequired, async (req, res) => {
-  const c = await db.prepare("SELECT * FROM jj_cutting_sheets WHERE id=?").get(req.params.id);
-  if (!c || c.deleted) return res.status(404).json({ error: "裁床单不存在" });
-  const { qty, note } = req.body || {};
-  if (qty !== undefined) await db.prepare("UPDATE jj_cutting_sheets SET qty=? WHERE id=?").run(Number(qty), c.id);
-  if (note !== undefined) await db.prepare("UPDATE jj_cutting_sheets SET note=? WHERE id=?").run(note, c.id);
-  await logOp(req.user.id, `修改裁床单：${c.id}`);
-  res.json({ sheet: await db.prepare("SELECT c.*, s.name AS style_name, s.code AS style_code FROM jj_cutting_sheets c JOIN jj_styles s ON s.id=c.style_id WHERE c.id=?").get(c.id) });
-});
-router.delete("/cutting-sheets/:id", A.authRequired, async (req, res) => {
-  const c = await db.prepare("SELECT * FROM jj_cutting_sheets WHERE id=?").get(req.params.id);
-  if (!c || c.deleted) return res.status(404).json({ error: "裁床单不存在" });
-  await db.prepare("UPDATE jj_cutting_sheets SET deleted=1 WHERE id=?").run(c.id);
-  await logOp(req.user.id, `删除裁床单：${c.id}`);
-  await notifyManagers(`${req.user.name} 删除了一张裁床单`, "/cutting", req.user.id);
-  res.json({ ok: true });
-});
-
 /* ---------------- 薪资管理：计件工资 = sum(打点数量 × 工序单价)，再加餐补/奖金/扣罚 ---------------- */
 async function pieceWage(userId, datePattern) {
   const row = await db.prepare(`
@@ -713,6 +633,8 @@ router.delete("/style-processes/:id", A.authRequired, async (req, res) => {
   await db.prepare("DELETE FROM jj_style_processes WHERE id=?").run(sp.id);
   res.json({ ok: true });
 });
+
+router.use(cutting.router);
 
 /* ---------------- 应用内通知 ---------------- */
 const NOTIF_LIMIT = 50;   // 只给最近 50 条，够用又不会让列表无限长

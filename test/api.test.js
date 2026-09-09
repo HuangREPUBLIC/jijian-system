@@ -142,18 +142,8 @@ async function call(method, path, token, body) {
   const scanListAfterDel = await call("GET", "/scan?date=2026-06-01", wT);
   ok(scanListAfterDel.j.records.length === 1, "删除后只剩一条打点记录");
 
-  // 裁床单 / 生产管理
+  // 款式（style2 后面「款式关联工序」用例还要用）
   const style2 = await call("POST", "/styles", aT, { name: "TESTSTYLE", code: "T001" });
-  const sheet1 = await call("POST", "/cutting-sheets", aT, { styleId: style2.j.style.id, qty: 500, note: "测试批次" });
-  ok(sheet1.status === 200 && sheet1.j.sheet.style_name === "TESTSTYLE", "管理员新增裁床单");
-  ok((await call("POST", "/cutting-sheets", wT, { styleId: style2.j.style.id, qty: 1 })).status === 200, "测试阶段普通员工也能新增裁床单");
-  ok((await call("GET", "/cutting-sheets", wT)).status === 200, "普通员工能查看裁床单");
-  const sheetEdit = await call("PATCH", `/cutting-sheets/${sheet1.j.sheet.id}`, aT, { qty: 600 });
-  ok(sheetEdit.status === 200 && sheetEdit.j.sheet.qty === 600, "管理员修改裁床单数量");
-  const sheetDel = await call("DELETE", `/cutting-sheets/${sheet1.j.sheet.id}`, aT);
-  ok(sheetDel.status === 200, "管理员删除裁床单");
-  const sheetsAfterDel = await call("GET", "/cutting-sheets", aT);
-  ok(!sheetsAfterDel.j.sheets.some(x => x.id === sheet1.j.sheet.id), "删除后的裁床单不再出现");
 
   // 薪资：计件单价工序 + 打点 -> 计件工资，再叠加餐补/奖金/扣罚
   const proc3 = await call("POST", "/processes", aT, { name: "锁边", unit: "件", stdQty: 100, hourQuota: 12.5, unitPrice: 2 });
@@ -177,7 +167,6 @@ async function call(method, path, token, body) {
   // 操作记录 / 全员扫菲记录
   const ops = await call("GET", "/operations", aT);
   ok(ops.status === 200 && ops.j.logs.length > 0, "管理员能看到操作记录");
-  ok(ops.j.logs.some(x => x.action.includes("裁床单")), "操作记录里包含裁床单相关操作");
   ok((await call("GET", "/operations", wT)).status === 403, "普通员工看不了操作记录");
 
   const scanAll = await call("GET", "/scan-all?date=2026-06-02", aT);
