@@ -633,3 +633,17 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
   .tbl-wrap.matrix{overflow-x:visible}
   .sw-grid{grid-template-columns:repeat(3,1fr)}
 }
+
+/* ---------- 生产进度 ---------- */
+.bundle-card{margin-bottom:10px}
+/* 工序进展的环形进度：conic-gradient 画环，不引图表库 */
+.ring-wrap{display:flex;align-items:center;gap:16px;padding:12px 0}
+.ring{position:relative;width:88px;height:88px;flex:none;border-radius:50%;
+  display:grid;place-items:center;
+  background:conic-gradient(var(--brand) calc(var(--p) * 1%), var(--line) 0)}
+.ring::after{content:"";position:absolute;width:68px;height:68px;border-radius:50%;background:var(--card)}
+.ring span{position:relative;z-index:1;font-weight:650;font-size:var(--fs-sm)}
+.ring-nums{flex:1;min-width:0;display:flex;gap:10px}
+.rn{flex:1;min-width:0;text-align:center}
+.rn-v{font-size:var(--fs-xl);font-weight:650}
+.rn-l{font-size:var(--fs-cap);color:var(--ink-3);margin-top:2px}

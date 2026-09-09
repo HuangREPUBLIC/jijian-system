@@ -28,6 +28,9 @@ let state = {
   // 所以是按点选先后入列的数组，不是集合。
   cf: null,
   cv: null,   // 查看裁床单：{ order, bundles, processes, summary }
+  pg: null, pgKw: "",  // 生产进度（按扎）
+  pr: null,            // 工序进展
+  bp: null,            // 生产进度详情（一扎的每道工序）
   home: { today: 0, mgr: null, emp: null },
   scan: { date: todayStr(), records: null, eff: null },
   att: { userId: "", date: todayStr(), records: null },
@@ -263,6 +266,19 @@ async function loadView(v) {
         bundlesAll: 1, customNos: {}, vatNos: {}
       };
     }
+    return;
+  }
+  if (v === "cutprogress") {
+    state.pg = await api("GET", `/cut-orders/${route.id}/progress`);
+    state.pgKw = state.pgKw || "";
+    return;
+  }
+  if (v === "procprogress") {
+    state.pr = await api("GET", `/cut-orders/${route.id}/process-progress`);
+    return;
+  }
+  if (v === "bundleprogress") {
+    state.bp = await api("GET", "/bundles/" + route.id);
     return;
   }
   if (v === "cutview") {
@@ -623,7 +639,8 @@ function render() {
   const views = {
     home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, styleprocs: vStyleProcs, attendance: vAttendance,
     efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
-    notifs: vNotifs, cutorders: vCutOrders, cutform: vCutForm, cutview: vCutView
+    notifs: vNotifs, cutorders: vCutOrders, cutform: vCutForm, cutview: vCutView, cutprogress: vCutProgress,
+    bundleprogress: vBundleProgress, procprogress: vProcProgress
   };
   app.innerHTML = `
     ${sidebarHtml()}
@@ -1224,6 +1241,130 @@ function vCutView() {
     </div></section>`;
 }
 
+
+/* ---------- 生产进度（按扎） ----------
+ * 两个容易混的口径，这里都要显示，不能互相顶替：
+ *   已完成数   = 该扎各道工序完成件数的**最小值**（所有工序都过了的件数）
+ *   进度百分比 = 已整扎做完的**工序数** / 工序总数
+ */
+function vCutProgress() {
+  const d = state.pg;
+  if (!d) return `<div class="empty">加载中…</div>`;
+  const o = d.order, procs = d.processes;
+  const kw = (state.pgKw || "").trim();
+  const list = kw ? d.bundles.filter(b => String(b.bundle_no).includes(kw) || String(b.ticket_no).includes(kw)) : d.bundles;
+  const pct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;
+  return `<section class="group"><div class="card">
+      <div class="row-item"><div class="row-main">
+        <div class="row-label">款号 ${esc(o.style_code || o.style_name || "—")}</div>
+        <div class="sc-grid" style="margin-top:6px">
+          <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
+          <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
+          <span class="sc-cell"><span class="sc-k">客户：</span><span class="sc-v">${esc(o.customer || "—")}</span></span>
+          <span class="sc-cell"><span class="sc-k">工序：</span><span class="sc-v">${procs.length} 道</span></span>
+          <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
+            <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
+        </div>
+        <div class="cc-prog" style="padding:10px 0 0">
+          <span class="cc-prog-t">已完成件数 ${num(d.completed_qty)}</span>
+          <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      </div></div>
+    </div></section>
+
+    <section class="group"><div class="card">
+      <button class="row-item tap w-row" onclick="go('procprogress','${o.id}')">
+        <div class="row-main"><div class="row-label">查看工序进展</div>
+          <div class="row-sub">每道工序做了多少、还剩多少，按颜色尺码分解</div></div>
+        <span class="chev">›</span></button>
+    </div></section>
+
+    <section class="group">
+      <div class="group-title">每扎进展</div>
+      <div class="searchbar"><input id="pg-kw" placeholder="请输入扎号 / 菲票号" value="${esc(state.pgKw)}"
+        oninput="A.setPgKw(this.value)"></div>
+      ${list.length ? list.map(b => `<div class="card bundle-card">
+        <button class="row-item tap w-row" onclick="go('bundleprogress','${b.id}')">
+          <div class="row-main">
+            <div class="row-label">扎号：${b.bundle_no}</div>
+            <div class="sc-grid" style="margin-top:4px">
+              <span class="sc-cell"><span class="sc-k">菲票ID：</span><span class="sc-v">${b.ticket_no}</span></span>
+              <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
+              <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
+              <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
+            </div>
+            <div class="cc-prog" style="padding:8px 0 0">
+              <span class="cc-prog-t">已完成数 ${num(b.done)}</span>
+              <div class="pbar"><i style="width:${b.percent}%"></i></div>
+              <span class="cc-pct">${procs.filter(p => (b.perProcess || {})[p.id] >= b.qty).length}/${procs.length} 道</span></div>
+          </div><span class="chev">›</span></button>
+        ${isManager() ? `<div class="btn-row" style="padding:0 12px 12px">
+          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
+      </div>`).join("") : `<div class="card"><div class="empty">${kw ? "没有匹配的扎号" : "这张单还没有菲票"}</div></div>`}
+    </section>`;
+}
+
+/* ---------- 生产进度详情：一扎的每道工序 ---------- */
+function vBundleProgress() {
+  const d = state.bp;
+  if (!d) return `<div class="empty">加载中…</div>`;
+  const b = d.bundle, o = d.order, procs = d.processes;
+  const doneProcs = procs.filter(p => p.done >= b.qty).length;
+  const pct = procs.length ? Math.round((doneProcs / procs.length) * 100) : 0;
+  return `<section class="group"><div class="card">
+      <div class="row-item"><div class="row-main">
+        <div class="row-label">扎号：${b.bundle_no}</div>
+        <div class="sc-grid" style="margin-top:6px">
+          <span class="sc-cell"><span class="sc-k">菲票号：</span><span class="sc-v">${b.ticket_no}</span></span>
+          <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
+          <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
+          <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
+        </div>
+        <div class="cc-prog" style="padding:10px 0 0">
+          <span class="cc-prog-t">已完成工序数 ${doneProcs} / ${procs.length}</span>
+          <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      </div></div>
+    </div></section>
+
+    <section class="group">
+      <div class="group-title">每道工序进展</div>
+      <div class="card">
+        ${isManager() ? `<div class="btn-row" style="padding:10px 0 4px">
+          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
+        ${procs.map(p => `<div class="row-item">
+          <div class="row-main"><div class="row-label">${esc(p.name)}</div>
+            <div class="pbar" style="margin-top:6px"><i style="width:${b.qty > 0 ? Math.round(p.done / b.qty * 100) : 0}%"></i></div></div>
+          <div class="row-value">已完成${num(p.done)}件，剩余${num(p.remaining)}件</div>
+        </div>`).join("")}
+      </div>
+      <div class="btn-row" style="padding-left:0;padding-right:0">
+        <button class="btn ghost block" onclick="go('cutprogress','${o.id}')">返回该单进度</button></div>
+    </section>`;
+}
+
+/* ---------- 工序进展：每道工序 + 颜色尺码分解 ---------- */
+function vProcProgress() {
+  const d = state.pr;
+  if (!d) return `<div class="empty">加载中…</div>`;
+  return d.processes.length ? d.processes.map(p => `<section class="group">
+      <div class="group-title">${esc(p.name)}</div>
+      <div class="card">
+        <div class="ring-wrap">
+          <div class="ring" style="--p:${p.percent}"><span>${p.percent}%</span></div>
+          <div class="ring-nums">
+            <div class="rn"><div class="rn-v num">${num(p.total)}</div><div class="rn-l">工序总数</div></div>
+            <div class="rn"><div class="rn-v num">${num(p.done)}</div><div class="rn-l">完成</div></div>
+            <div class="rn"><div class="rn-v num">${num(p.remaining)}</div><div class="rn-l">余数</div></div>
+          </div>
+        </div>
+        <div class="tbl-wrap"><table class="tbl">
+          <tr><th>颜色</th><th>尺寸</th><th>工序总数</th><th>完成</th><th>余数</th></tr>
+          ${p.breakdown.map(x => `<tr><td>${esc(x.color)}</td><td>${esc(x.size)}</td>
+            <td class="num">${num(x.total)}</td><td class="num">${num(x.done)}</td><td class="num">${num(x.remaining)}</td></tr>`).join("")}
+        </table></div>
+      </div>
+    </section>`).join("") : `<section class="group"><div class="card"><div class="empty">这张单还没有工序</div></div></section>`;
+}
+
 /* ---------- 生产管理 ----------
  * 概览卡（今日/昨日/本月已完成 + 当前生产中件数）+ 生产明细（按裁床单看 / 按款看）。
  * 已完成件数按"这段时间打点了多少件"算，跟单张单的完工口径不是一回事：
@@ -1757,6 +1898,29 @@ const A = {
     });
   },
   toggleSyncPick(id, on) { if (on) state.syncPick.add(id); else state.syncPick.delete(id); },
+
+  /* ---------- 生产进度 ---------- */
+  setPgKw(v) {
+    state.pgKw = v;
+    clearTimeout(A._pgT);
+    A._pgT = setTimeout(() => {
+      render();
+      const el = $("pg-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
+    }, 250);
+  },
+  // 改的是"这一扎裁了多少件"（分母），不碰打点记录（分子）。
+  // 改到比已完成数还小会造出"做了12件却只裁了3件"的鬼数据，后端会拦，这里把它的提示原样弹出来。
+  editBundleQty(id, curQty) {
+    modal({
+      title: "修改裁床件数", input: true, value: String(curQty), okText: "保存",
+      onOk: (v) => {
+        const qty = Number(v);
+        if (!(qty > 0)) { toast("件数要大于 0"); return false; }
+        run(() => api("PATCH", "/bundles/" + id, { qty }), "已修改");
+        return true;
+      }
+    });
+  },
 
   /* ---------- 裁床编菲 ---------- */
   cfSet(k, v) { state.cf[k] = v; },
