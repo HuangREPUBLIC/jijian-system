@@ -343,7 +343,12 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
    部分手机浏览器(尤其旧版 iOS Safari)不支持 showPicker()，靠 JS 模拟点击弹不出系统日期轮。
    opacity 故意写成接近 0 的非零值：WebKit 对 opacity:0 的 input[type=date] 不弹选择器 */
 .date-native{position:absolute;inset:0;width:100%;height:100%;opacity:.011;cursor:pointer;
-  border:0;padding:0;margin:0;z-index:1}
+  border:0;padding:0;margin:0;z-index:1;
+  /* 文字和日历图标都设成透明：opacity 不能取 0（WebKit 对 opacity:0 的 date 输入不弹选择器），
+     但 .011 的不透明度仍然会让原生的 "yyyy/mm/dd" 占位文字隐隐透出来，压在我们自己的中文上面 */
+  color:transparent;background:transparent}
+.date-native::-webkit-datetime-edit,
+.date-native::-webkit-calendar-picker-indicator{color:transparent;opacity:0}
 .date-btn{display:flex;align-items:center;justify-content:space-between;gap:10px;
   text-align:left;cursor:pointer;background:var(--bg)}
 .date-btn.empty{color:var(--ink-2)}
@@ -647,3 +652,66 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .rn{flex:1;min-width:0;text-align:center}
 .rn-v{font-size:var(--fs-xl);font-weight:650}
 .rn-l{font-size:var(--fs-cap);color:var(--ink-3);margin-top:2px}
+
+/* ---------- 打印菲票 ----------
+   #print-root 在屏幕上恒隐藏，只有 @media print 时才显示，其余界面全部隐掉。
+   走的是 SPA 内打印而不是新开窗口：鉴权是 localStorage 里的 Bearer token，
+   新窗口带不上这个头，服务端直出的打印页必然 401。 */
+#print-root{display:none}
+.chkline{display:flex;align-items:center;gap:8px;cursor:pointer}
+.chkline input[type=checkbox]{width:18px;height:18px;flex:none}
+
+@media print{
+  #app,.tabbar,.dsidebar,.msg,.mask,.navbar,.dbreadcrumb,.home-brand{display:none !important}
+  #print-root{display:block}
+  html,body{background:#fff;margin:0}
+  .ticket{page-break-after:always;break-after:page;box-sizing:border-box;
+    padding:3mm;color:#000;font-size:9pt;line-height:1.35;overflow:hidden}
+  .ticket.rot{transform:rotate(180deg)}
+  .tpl-label60x40 .ticket{width:60mm;height:40mm}
+  .tpl-label80x60 .ticket{width:80mm;height:60mm;font-size:10pt}
+  /* A4 一页多张：票不再各自分页，铺满一页再翻页 */
+  .tpl-a4grid{display:flex;flex-wrap:wrap}
+  .tpl-a4grid .ticket{width:65mm;height:45mm;page-break-after:auto;break-after:auto;border:1px dashed #999}
+  .tk-top{display:flex;justify-content:space-between;gap:2mm;font-size:8pt}
+  .tk-mid{display:flex;align-items:center;justify-content:space-between;margin:1mm 0}
+  .tk-bundle-n{font-size:22pt;font-weight:700;line-height:1}
+  .tk-bundle-l{font-size:7pt}
+  .tk-qr svg{width:15mm;height:15mm;display:block}
+  .tk-rows{display:flex;flex-wrap:wrap;gap:0 3mm;font-size:8pt}
+  .tk-procs{display:flex;flex-wrap:wrap;gap:0 3mm;font-size:7.5pt;margin-top:.5mm}
+  .tk-note{font-size:7.5pt;margin-top:.5mm}
+}
+
+/* ---------- 输入区收敛 ----------
+   全局 .in 的 42px 高是为了手机上的点按目标，但日期区间面板、扎号范围这类
+   "只填一个日期/两位数"的地方，用全尺寸输入框会显得又空又笨重，这里单独收小。 */
+.in.tiny{width:70px;min-height:34px;padding:6px 8px;font-size:var(--fs-sm);text-align:center}
+.dr-panel .in,.dr-panel .date-btn{min-height:36px;padding:7px 10px;font-size:var(--fs-sm)}
+.dr-panel .date-btn{justify-content:flex-start}
+.mx-cell .in{min-height:34px}
+.stepper input{width:64px;min-height:34px;padding:6px 4px;font-size:var(--fs-sm)}
+.stepper button{width:28px;height:28px}
+
+/* 卡片内单独一行的小操作按钮：跟卡片左右留白对齐，不要贴边 */
+.qty-edit-row{display:flex;padding:2px 12px 12px}
+.bundle-card .qty-edit-row{padding-top:0}
+
+/* 查看裁床单单头卡里的工序行 */
+.sc-procline{display:flex;gap:6px;padding:0 12px 12px;font-size:var(--fs-sm);flex-wrap:wrap}
+.sc-procline .sc-v{white-space:normal}
+
+/* ---------- 桌面端 ---------- */
+@media (min-width:768px){
+  /* 卡片信息区在宽屏上有富余，键值改成三列排，日期行仍然独占一行 */
+  .sc-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 20px}
+  .cut-card .sc-grid{grid-template-columns:repeat(3,minmax(0,1fr));font-size:var(--fs-sm)}
+  .cut-card .sc-thumb{width:72px;height:72px}
+  .style-card .sc-head,.cut-card .cc-head{padding:16px 16px 12px}
+  .sc-acts,.cut-card .sc-acts{padding:0 16px 16px}
+  .qty-edit-row,.sc-procline{padding-left:16px;padding-right:16px}
+  .cc-prog{padding:0 16px 12px}
+  /* 打印设置、裁床编菲这类长表单在宽屏上不要拉满整屏宽 */
+  .mx-cell{min-width:104px}
+  .ring-wrap{gap:28px}
+}

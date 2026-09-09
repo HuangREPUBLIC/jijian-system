@@ -31,6 +31,7 @@ let state = {
   pg: null, pgKw: "",  // 生产进度（按扎）
   pr: null,            // 工序进展
   bp: null,            // 生产进度详情（一扎的每道工序）
+  cp: null,            // 打印菲票设置
   home: { today: 0, mgr: null, emp: null },
   scan: { date: todayStr(), records: null, eff: null },
   att: { userId: "", date: todayStr(), records: null },
@@ -266,6 +267,18 @@ async function loadView(v) {
         bundlesAll: 1, customNos: {}, vatNos: {}
       };
     }
+    return;
+  }
+  if (v === "cutprint") {
+    const d = await api("GET", "/cut-orders/" + route.id);
+    const maxNo = d.bundles.length ? Math.max(...d.bundles.map(b => b.bundle_no)) : 1;
+    const minNo = d.bundles.length ? Math.min(...d.bundles.map(b => b.bundle_no)) : 1;
+    state.cp = {
+      orderId: route.id, order: d.order, bundleCount: d.bundles.length,
+      from: minNo, to: maxNo, picks: "", usePicks: false,
+      copies: 1, template: "label60x40", rotate: false, perNote: false,
+      note: d.order.ticket_note || "", companyName: d.order.company_name || COMPANY_NAME
+    };
     return;
   }
   if (v === "cutprogress") {
@@ -557,9 +570,17 @@ function pageMeta() {
     cutprogress: "生产进度", bundleprogress: "生产进度详情", procprogress: "工序进展"
   };
   const parent = SUB_VIEWS[route.v];
+  // 面包屑要走完整条链：生产进度详情 › 生产进度 › 生产管理 › 首页。
+  // 新加的页面嵌套到三层，只显示直接上级的话在桌面端会看不出自己在哪儿。
+  // 注意逐级的 id 我们并不保留（每页只知道自己的 id），所以链上除了直接上级之外
+  // 都只能回到该页的"无 id"状态——对 home/styles/cutorders 这些列表页正好合适。
+  const chain = [];
+  let cur = parent, guard = 0;
+  while (cur && guard++ < 6) { chain.unshift(cur); cur = SUB_VIEWS[cur]; }
   return {
     title: T[route.v] || APP_NAME,
     left: parent ? back(T[parent], parent) : "",
+    chain: chain.map((v) => ({ v, label: T[v] || APP_NAME })),
     crumb: parent ? { label: T[parent], fn: `go('${parent}')` } : null
   };
 }
@@ -639,13 +660,15 @@ function render() {
   const views = {
     home: vHome, scan: vScan, processes: vProcesses, styles: vStyles, styleprocs: vStyleProcs, attendance: vAttendance,
     efficiency: vEfficiency, scanlog: vScanlog, payroll: vPayroll, admin: vAdmin, mine: vMine,
-    notifs: vNotifs, cutorders: vCutOrders, cutform: vCutForm, cutview: vCutView, cutprogress: vCutProgress,
+    notifs: vNotifs, cutorders: vCutOrders, cutform: vCutForm, cutview: vCutView, cutprogress: vCutProgress, cutprint: vCutPrint,
     bundleprogress: vBundleProgress, procprogress: vProcProgress
   };
   app.innerHTML = `
     ${sidebarHtml()}
     ${route.v === "home" ? `<div class="home-brand"><div class="co">${esc(COMPANY_NAME)}</div><div class="app">${esc(APP_NAME)}</div></div>` : ""}
-    ${meta.crumb ? `<nav class="dbreadcrumb"><button class="dbc-link" onclick="${meta.crumb.fn}">${esc(meta.crumb.label)}</button><span class="dbc-sep">›</span><span class="dbc-current">${esc(meta.title)}</span></nav>` : ""}
+    ${meta.chain && meta.chain.length ? `<nav class="dbreadcrumb">${meta.chain.map((c) =>
+      `<button class="dbc-link" onclick="go('${c.v}')">${esc(c.label)}</button><span class="dbc-sep">\u203a</span>`).join("")
+      }<span class="dbc-current">${esc(meta.title)}</span></nav>` : ""}
     <header class="navbar"><div class="navbar-in">
       <div class="nav-slot">${meta.left || ""}</div>
       <h1 class="nav-title">${esc(meta.title)}</h1>
@@ -1194,17 +1217,27 @@ function vCutView() {
   bundles.forEach(b => (byCell[b.color + "|" + b.size] || (byCell[b.color + "|" + b.size] = [])).push(b));
   const maxPer = Math.max(1, ...Object.values(byCell).map(a => a.length));
 
-  return `<section class="group"><div class="card">
-      <div class="row-item"><div class="row-main">
-        <div class="row-label">款号：${esc(o.style_code || o.style_name || "—")}</div>
-        <div class="row-sub">款名：${esc(o.style_name || "—")}　床次：${o.bed_no}</div>
-        <div class="row-sub">总扎数：${num(o.total_bundles)}　总件数：${num(o.total_qty)}</div>
-        <div class="row-sub">裁床日期：${esc(o.cut_date || "—")}　交货：${esc(o.ship_date || "—")}</div>
-      </div></div>
-      ${processes.length ? `<div class="row-item"><div class="row-main">
-        <div class="row-label">工序（${processes.length} 道）</div>
-        <div class="row-sub">${processes.map(p => esc(p.name) + (p.show_price ? ` ${num(p.unit_price)}元` : "")).join(" · ")}</div>
-      </div></div>` : ""}
+  return `<section class="group"><div class="card style-card">
+      <div class="sc-head">
+        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}"
+            onclick="A.lightboxOne(this)" alt="款式图">`
+      : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        <div class="sc-info">
+          <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
+          <div class="sc-grid">
+            <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${esc(o.style_name || "—")}</span></span>
+            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
+            <span class="sc-cell"><span class="sc-k">总扎数：</span><span class="sc-v">${num(o.total_bundles)}</span></span>
+            <span class="sc-cell"><span class="sc-k">总件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
+            <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
+              <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
+          </div>
+        </div>
+      </div>
+      ${processes.length ? `<div class="sc-procline">
+        <span class="sc-k">工序（${processes.length} 道）</span>
+        <span class="sc-v">${processes.map(p => esc(p.name) + (p.show_price ? ` ${num(p.unit_price)}元` : "")).join(" · ")}</span>
+      </div>` : ""}
     </div></section>
 
     <section class="group">
@@ -1242,6 +1275,66 @@ function vCutView() {
 }
 
 
+
+/* ---------- 打印菲票 ----------
+ * 份数 / 旋转180° / 逐个备注 / 公司名称 / 菲票备注 都是纯前端渲染参数，不进请求；
+ * 只有扎号范围和任选扎号会传给后端（它要按范围取扎并生成二维码）。
+ * 「打印机」这一项在网页端换成「纸张模板」——浏览器不能枚举/指定打印机，
+ * 打印机由系统打印对话框选，这是 Web 的硬限制，不是功能缺失。
+ */
+const PRINT_TEMPLATES = [["label60x40", "标签 60×40mm"], ["label80x60", "标签 80×60mm"], ["a4grid", "A4 一页多张"]];
+function vCutPrint() {
+  const cp = state.cp;
+  if (!cp) return `<div class="empty">加载中…</div>`;
+  const o = cp.order;
+  return `<section class="group"><div class="card">
+      <div class="row-item"><div class="row-main">
+        <div class="row-label">${esc(o.style_code || o.style_name || "—")} · 床次${o.bed_no}</div>
+        <div class="row-sub">共 ${num(cp.bundleCount)} 张菲票，扎号 ${cp.from} ~ ${cp.to}</div>
+      </div></div>
+    </div></section>
+
+    <section class="group"><div class="card">
+      <div class="field row"><span>打印扎号<span class="req">*</span></span>
+        <input class="in tiny" type="number" inputmode="numeric" value="${esc(cp.from)}"
+          ${cp.usePicks ? "disabled" : ""} onchange="A.cpSet('from',this.value)">
+        <span class="range-sep">—</span>
+        <input class="in tiny" type="number" inputmode="numeric" value="${esc(cp.to)}"
+          ${cp.usePicks ? "disabled" : ""} onchange="A.cpSet('to',this.value)"></div>
+
+      <div class="field"><label class="chkline">
+        <input type="checkbox" ${cp.usePicks ? "checked" : ""} onchange="A.cpToggle('usePicks')">
+        <span>任选扎号打印</span></label>
+        ${cp.usePicks ? `<input class="in" value="${esc(cp.picks)}" placeholder="用逗号分隔，例如 1,4,7"
+          onchange="A.cpSet('picks',this.value)">` : ""}</div>
+
+      <div class="field row"><span>打印份数<span class="req">*</span></span>
+        <div class="stepper">
+          <button onclick="A.cpStep(-1)" aria-label="减少">−</button>
+          <input class="in" type="number" inputmode="numeric" value="${esc(cp.copies)}" onchange="A.cpSet('copies',this.value)">
+          <button onclick="A.cpStep(1)" aria-label="增加">＋</button></div></div>
+
+      <label class="field"><span>纸张模板<span class="req">*</span></span>
+        ${selectHtml("cp-tpl", PRINT_TEMPLATES, cp.template, "A.cpSet('template',this.value)")}
+        <div class="row-sub">打印机由系统打印对话框选择，网页无法指定打印机</div></label>
+
+      <label class="field"><span>菲票备注</span>
+        <input class="in" value="${esc(cp.note)}" placeholder="会印在每张票上" onchange="A.cpSet('note',this.value)"></label>
+      <label class="field"><span>公司名称</span>
+        <input class="in" value="${esc(cp.companyName)}" onchange="A.cpSet('companyName',this.value)"></label>
+
+      <div class="field"><label class="chkline">
+        <input type="checkbox" ${cp.rotate ? "checked" : ""} onchange="A.cpToggle('rotate')">
+        <span>打印方向旋转 180°</span></label></div>
+      <div class="field"><label class="chkline">
+        <input type="checkbox" ${cp.perNote ? "checked" : ""} onchange="A.cpToggle('perNote')">
+        <span>逐个备注打印（用每一扎自己的备注）</span></label></div>
+    </div></section>
+
+    <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn block" onclick="A.doPrint()">打印</button></div></section>`;
+}
+
 /* ---------- 生产进度（按扎） ----------
  * 两个容易混的口径，这里都要显示，不能互相顶替：
  *   已完成数   = 该扎各道工序完成件数的**最小值**（所有工序都过了的件数）
@@ -1254,10 +1347,14 @@ function vCutProgress() {
   const kw = (state.pgKw || "").trim();
   const list = kw ? d.bundles.filter(b => String(b.bundle_no).includes(kw) || String(b.ticket_no).includes(kw)) : d.bundles;
   const pct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;
-  return `<section class="group"><div class="card">
-      <div class="row-item"><div class="row-main">
-        <div class="row-label">款号 ${esc(o.style_code || o.style_name || "—")}</div>
-        <div class="sc-grid" style="margin-top:6px">
+  return `<section class="group"><div class="card style-card">
+      <div class="sc-head">
+        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}"
+            onclick="A.lightboxOne(this)" alt="款式图">`
+      : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        <div class="sc-info">
+        <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
+        <div class="sc-grid">
           <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
           <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
           <span class="sc-cell"><span class="sc-k">客户：</span><span class="sc-v">${esc(o.customer || "—")}</span></span>
@@ -1265,10 +1362,11 @@ function vCutProgress() {
           <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
             <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
         </div>
-        <div class="cc-prog" style="padding:10px 0 0">
-          <span class="cc-prog-t">已完成件数 ${num(d.completed_qty)}</span>
-          <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
-      </div></div>
+        </div>
+      </div>
+      <div class="cc-prog">
+        <span class="cc-prog-t">已完成件数 ${num(d.completed_qty)}</span>
+        <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
     </div></section>
 
     <section class="group"><div class="card">
@@ -1297,7 +1395,7 @@ function vCutProgress() {
               <div class="pbar"><i style="width:${b.percent}%"></i></div>
               <span class="cc-pct">${procs.filter(p => (b.perProcess || {})[p.id] >= b.qty).length}/${procs.length} 道</span></div>
           </div><span class="chev">›</span></button>
-        ${isManager() ? `<div class="btn-row" style="padding:0 12px 12px">
+        ${isManager() ? `<div class="qty-edit-row">
           <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
       </div>`).join("") : `<div class="card"><div class="empty">${kw ? "没有匹配的扎号" : "这张单还没有菲票"}</div></div>`}
     </section>`;
@@ -1328,7 +1426,7 @@ function vBundleProgress() {
     <section class="group">
       <div class="group-title">每道工序进展</div>
       <div class="card">
-        ${isManager() ? `<div class="btn-row" style="padding:10px 0 4px">
+        ${isManager() ? `<div class="qty-edit-row">
           <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
         ${procs.map(p => `<div class="row-item">
           <div class="row-main"><div class="row-label">${esc(p.name)}</div>
@@ -1898,6 +1996,82 @@ const A = {
     });
   },
   toggleSyncPick(id, on) { if (on) state.syncPick.add(id); else state.syncPick.delete(id); },
+
+  // 单张款式图的灯箱：卡片上的缩略图点开看大图，复用已有的画廊机制
+  lightboxOne(el) {
+    const k = regGallery([el.getAttribute("src")]);
+    el.setAttribute("data-gallery", k); el.setAttribute("data-i", "0");
+    A.lightboxFromEl(el);
+  },
+
+  /* ---------- 打印菲票 ---------- */
+  cpSet(k, v) {
+    state.cp[k] = (k === "from" || k === "to" || k === "copies") ? Math.max(1, Number(v) || 1) : v;
+    if (k === "copies") state.cp.copies = Math.min(10, state.cp.copies);
+    render();
+  },
+  cpToggle(k) { state.cp[k] = !state.cp[k]; render(); },
+  cpStep(d) { A.cpSet("copies", (Number(state.cp.copies) || 1) + d); },
+
+  async doPrint() {
+    const cp = state.cp;
+    const q = new URLSearchParams();
+    if (cp.usePicks) {
+      if (!String(cp.picks).trim()) return toast("请填写要打印的扎号");
+      q.set("picks", String(cp.picks).trim());
+    } else { q.set("from", cp.from); q.set("to", cp.to); }
+
+    let data;
+    try { data = await api("GET", `/cut-orders/${cp.orderId}/print-data?${q}`); }
+    catch (e) { return toast((e && e.error) || "取打印数据失败"); }
+
+    const { order: o, processes, bundles } = data;
+    const company = cp.companyName || o.company_name || "";
+    const copies = Math.max(1, Math.min(10, Number(cp.copies) || 1));
+
+    const ticket = (b) => `<div class="ticket${cp.rotate ? " rot" : ""}">
+      <div class="tk-top"><span>${esc(company)}</span><span>${esc(o.style_code || o.style_name || "")}</span></div>
+      <div class="tk-mid">
+        <div class="tk-bundle"><div class="tk-bundle-n">${b.bundle_no}</div><div class="tk-bundle-l">扎号</div></div>
+        <div class="tk-qr">${b.qrSvg}</div>
+      </div>
+      <div class="tk-rows">
+        <span>菲票 ${b.ticket_no}</span><span>床次 ${o.bed_no}</span>
+        <span>${esc(b.color || "")}</span><span>${esc(b.size || "")}</span>
+        <span><b>${num(b.qty)} 件</b></span>
+        ${b.vat_no ? `<span>缸号 ${esc(b.vat_no)}</span>` : ""}
+        ${o.doc_no ? `<span>制单 ${esc(o.doc_no)}</span>` : ""}
+        ${o.customer ? `<span>${esc(o.customer)}</span>` : ""}
+      </div>
+      <div class="tk-procs">${processes.map(p =>
+        `<span>${esc(p.name)}${p.show_price ? ` ${num(p.unit_price)}` : ""}</span>`).join("")}</div>
+      ${(cp.perNote ? b.note : cp.note) ? `<div class="tk-note">${esc(cp.perNote ? (b.note || "") : cp.note)}</div>` : ""}
+    </div>`;
+
+    const html = [];
+    for (const b of bundles) for (let i = 0; i < copies; i++) html.push(ticket(b));
+
+    // @page 的尺寸不能用 CSS 变量、也没法靠 class 切换，只能在打印前把这段样式换掉
+    const PAGE_SIZES = { label60x40: "60mm 40mm", label80x60: "80mm 60mm", a4grid: "A4" };
+    let pageStyle = document.getElementById("page-size");
+    if (!pageStyle) {
+      pageStyle = document.createElement("style");
+      pageStyle.id = "page-size";
+      document.head.appendChild(pageStyle);
+    }
+    pageStyle.textContent = `@page { size: ${PAGE_SIZES[cp.template] || "A4"}; margin: 0 }`;
+
+    const root = $("print-root");
+    root.className = "tpl-" + cp.template;
+    root.innerHTML = html.join("");
+    toast(`已排版 ${bundles.length} 张菲票 × ${copies} 份`);
+    // 等浏览器完成排版再调打印，否则部分浏览器印出来是空白。
+    // rAF 在后台标签页里不触发，所以再挂一个 setTimeout 兜底，两者谁先到算谁（只打一次）。
+    let printed = false;
+    const fire = () => { if (printed) return; printed = true; window.print(); };
+    requestAnimationFrame(() => requestAnimationFrame(fire));
+    setTimeout(fire, 300);
+  },
 
   /* ---------- 生产进度 ---------- */
   setPgKw(v) {

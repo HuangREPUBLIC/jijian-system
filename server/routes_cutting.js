@@ -304,7 +304,7 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
 /* ---------------- 生产进度：按扎 ---------------- */
 router.get("/cut-orders/:id/progress", A.authRequired, async (req, res) => {
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code
+    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
      FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
@@ -366,7 +366,7 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
   if (!bundle) return res.status(404).json({ error: "菲票不存在" });
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code
+    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
      FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=?`).get(bundle.order_id);
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
   const rows = await db.prepare(
@@ -469,7 +469,7 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
  */
 router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, async (req, res) => {
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code
+    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
      FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
 

@@ -36,6 +36,10 @@
     <p class="login-company">惠锦制衣有限公司</p>
     <h1 class="login-title">计件跟踪</h1>
   </div></div></div></div>
+  <!-- 打印专用容器：屏幕上恒隐藏，@media print 时只显示它。
+       不用 window.open 打开服务端直出的打印页——本系统鉴权走 Authorization: Bearer
+       （token 存在 localStorage），新窗口带不上这个头，直出页面必然 401。 -->
+  <div id="print-root" aria-hidden="true"></div>
   <div class="msg" id="msg" role="status"></div>
   <div class="mask" id="mask"></div>
   <script>
