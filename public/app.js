@@ -41,6 +41,7 @@ let state = {
   slog: { date: todayStr(), records: null },
   pay: { month: monthStr(), list: null, mine: null, editing: "" },
   empKw: "", empPage: 1,
+  pushOn: false,
   notif: { unread: 0, list: null },
   // 尺码/颜色/客户三个选项控件各自的展开状态与搜索词。桌面端展开是下拉面板，手机端是底部弹层。
   optUI: { size: { open: false, kw: "" }, color: { open: false, kw: "" }, customer: { open: false, kw: "" } },
@@ -247,6 +248,7 @@ async function loadView(v) {
     state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
     return;
   }
+  if (v === "mine") { await A.refreshPushState(); }
   if (v === "cutform") {
     const [s2, o] = await Promise.all([
       state.styles ? Promise.resolve({ styles: state.styles }) : api("GET", "/styles"),
@@ -1725,6 +1727,18 @@ function vMine() {
   </div></section>
 
   <section class="group">
+    <div class="group-title">系统推送</div>
+    <div class="card">
+      <div class="row-item">
+        <div class="row-main"><div class="row-label">在这台设备上接收通知</div>
+          <div class="row-sub">App 没打开时也能弹手机通知</div></div>
+        <button class="sw ${state.pushOn ? "on" : ""}" role="switch" aria-checked="${!!state.pushOn}"
+          onclick="A.togglePush()"><i></i></button>
+      </div>
+      <div class="field"><div class="row-sub">iPhone 需要先把网页「添加到主屏幕」、从图标打开才收得到；
+        微信内置浏览器不支持。收不到时页面里的红点和未读数照常工作。</div></div>
+    </div>
+
     <div class="group-title">修改密码</div>
     <div class="card">
       <label class="field"><span>新密码</span><input class="in" type="password" id="my-p1" autocomplete="new-password"></label>
@@ -2061,6 +2075,39 @@ const A = {
     const k = regGallery([el.getAttribute("src")]);
     el.setAttribute("data-gallery", k); el.setAttribute("data-i", "0");
     A.lightboxFromEl(el);
+  },
+
+  /* ---------- 系统推送订阅 ---------- */
+  // VAPID 公钥是 base64url，要转成 Uint8Array 才能传给 pushManager.subscribe
+  async togglePush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return toast("这个浏览器不支持系统推送");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const cur = await reg.pushManager.getSubscription();
+      if (cur) {
+        await api("POST", "/push/unsubscribe", { endpoint: cur.endpoint }).catch(() => {});
+        await cur.unsubscribe();
+        state.pushOn = false; render(); return toast("已关闭系统推送");
+      }
+      if (Notification.permission !== "granted" && (await Notification.requestPermission()) !== "granted") {
+        return toast("你拒绝了通知权限，可以在浏览器设置里改回来");
+      }
+      const { key } = await api("GET", "/push/public-key");
+      const pad = "=".repeat((4 - key.length % 4) % 4);
+      const raw = atob((key + pad).replace(/-/g, "+").replace(/_/g, "/"));
+      const appKey = Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey });
+      await api("POST", "/push/subscribe", { subscription: sub });
+      state.pushOn = true; render(); toast("已开启系统推送");
+    } catch (e) { toast((e && e.error) || "开启失败，请检查通知权限"); }
+  },
+  // 进「我的」页时同步一下开关的真实状态（用户可能在系统设置里关掉了）
+  async refreshPushState() {
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+      const reg = await navigator.serviceWorker.ready;
+      state.pushOn = !!(await reg.pushManager.getSubscription());
+    } catch (e) { state.pushOn = false; }
   },
 
   /* ---------- 扫菲打点（按扎） ---------- */

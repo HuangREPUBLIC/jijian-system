@@ -24,3 +24,27 @@ self.addEventListener("fetch", (e) => {
     }).catch(() => caches.match(req).then((hit) => hit || caches.match("/index.html")))
   );
 });
+
+/* ---------- 系统推送 ----------
+ * App 没打开时也能弹手机系统通知。tag 相同的通知会互相覆盖而不是堆一屏：
+ * 同一张裁床单连续改动只留最新一条，免得刷屏。 */
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) {}
+  e.waitUntil(self.registration.showNotification(d.title || "计件跟踪", {
+    body: d.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: d.tag || "jijian",
+    data: { url: d.url || "/" }
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  // 已经开着的窗口就直接跳过去并聚焦，没有再开新窗口
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+    for (const c of cs) if ("focus" in c) { c.navigate(url).catch(() => {}); return c.focus(); }
+    return self.clients.openWindow(url);
+  }));
+});

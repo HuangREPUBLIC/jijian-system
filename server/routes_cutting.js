@@ -14,6 +14,7 @@ const A = require("./auth");
 const { planBundles, duplicateBundleNos } = require("./cutting");
 const { visibleTo } = require("./pricing");
 const { logOp } = require("./oplog");
+const { notifyManagers } = require("./notify");
 const { cnDayStr } = require("./daytime");
 const { qrSvg } = require("./qr");
 
@@ -27,6 +28,7 @@ for (const m of ["get", "post", "put", "patch", "delete"]) {
       : h));
 }
 
+const num0 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const jsonParse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
 
 // 操作日志文案用："款号 床次N" 这种口径，跟旧版裁床单日志风格对齐
@@ -174,6 +176,10 @@ router.post("/cut-orders", A.authRequired, A.managerRequired, async (req, res) =
   }
 
   await logOp(req.user.id, `新建裁床单：${style.code || style.name} 床次${bedNo}（${plan.totalBundles}扎 ${plan.totalQty}件）`);
+  const newLabel = `${style.code || style.name} · 床次${bedNo}`;
+  await notifyManagers(`${req.user.name} 新建了裁床单 ${newLabel}`, "/cutorders", req.user.id,
+    { actorName: req.user.name, targetLabel: newLabel,
+      what: `新建裁床单（${plan.totalBundles}扎 ${plan.totalQty}件）`, tag: "cut-" + orderId });
   res.json({
     order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(orderId),
     bundles: await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(orderId)
@@ -242,6 +248,10 @@ router.patch("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, r
   await db.prepare(`UPDATE jj_cut_orders SET ${sets.join(",")} WHERE id=?`).run(...args);
   const changedLabels = Object.keys(PATCH_FIELD_LABELS).filter((k) => req.body[k] !== undefined).map((k) => PATCH_FIELD_LABELS[k]);
   await logOp(req.user.id, `修改裁床单：${await styleLabelOf(order.style_id)} 床次${order.bed_no}（改了：${changedLabels.join("、")}）`);
+  const editLabel = `${await styleLabelOf(order.style_id)} · 床次${order.bed_no}`;
+  await notifyManagers(`${req.user.name} 修改了裁床单 ${editLabel}`, "/cutorders", req.user.id,
+    { actorName: req.user.name, targetLabel: editLabel,
+      what: `修改了「${changedLabels.join("、")}」`, tag: "cut-" + order.id });
   res.json({ order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(order.id) });
 });
 
@@ -289,6 +299,10 @@ router.post("/cut-orders/:id/copy", A.authRequired, A.managerRequired, async (re
   } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
 
   await logOp(req.user.id, `复制裁床单：${await styleLabelOf(src.style_id)} 床次${src.bed_no} → 床次${bedNo}（${srcBundles.length}扎）`);
+  const copyLabel = `${await styleLabelOf(src.style_id)} · 床次${bedNo}`;
+  await notifyManagers(`${req.user.name} 复制出了裁床单 ${copyLabel}`, "/cutorders", req.user.id,
+    { actorName: req.user.name, targetLabel: copyLabel,
+      what: `从床次${src.bed_no}复制（${srcBundles.length}扎）`, tag: "cut-" + newId });
   res.json({ order: await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(newId) });
 });
 
@@ -298,6 +312,10 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   await db.prepare("UPDATE jj_cut_orders SET deleted=1 WHERE id=?").run(order.id);
   await logOp(req.user.id, `删除裁床单：${await styleLabelOf(order.style_id)} 床次${order.bed_no}`);
+  const delLabel = `${await styleLabelOf(order.style_id)} · 床次${order.bed_no}`;
+  await notifyManagers(`${req.user.name} 删除了裁床单 ${delLabel}`, "/cutorders", req.user.id,
+    { actorName: req.user.name, targetLabel: delLabel,
+      what: `删除了这张裁床单（${num0(order.total_bundles)}扎 ${num0(order.total_qty)}件）`, tag: "cut-" + order.id });
   res.json({ ok: true });
 });
 
@@ -436,7 +454,17 @@ router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res)
   await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
     .run(agg.n, agg.q, bundle.order_id);
 
-  res.json({ bundle: await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(bundle.id) });
+  const fresh = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(bundle.id);
+  if (req.body.qty !== undefined && Number(req.body.qty) !== bundle.qty) {
+    const ord = await db.prepare("SELECT bed_no, style_id FROM jj_cut_orders WHERE id=?").get(bundle.order_id);
+    const qLabel = `${await styleLabelOf(ord.style_id)} · 床次${ord.bed_no}`;
+    await logOp(req.user.id, `修改裁床件数：${qLabel} 扎号${bundle.bundle_no} ${num0(bundle.qty)} → ${num0(fresh.qty)}`);
+    await notifyManagers(`${req.user.name} 改了 ${qLabel} 的裁床件数`, "/cutorders", req.user.id,
+      { actorName: req.user.name, targetLabel: qLabel,
+        what: `把扎号${bundle.bundle_no}的件数从 ${num0(bundle.qty)} 改成了 ${num0(fresh.qty)}`,
+        tag: "cut-" + bundle.order_id });
+  }
+  res.json({ bundle: fresh });
 });
 
 /* ---------------- 生产管理概览 ---------------- */

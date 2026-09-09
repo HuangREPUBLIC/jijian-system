@@ -5,6 +5,8 @@ const path = require("path");
 const { db, pool, uid, getSetting, setSetting, UPLOAD_DIR } = require("./db");
 const A = require("./auth");
 const { logOp } = require("./oplog");
+const { notifyUsers, notifyManagers } = require("./notify");
+const P = require("./push");
 const cutting = require("./routes_cutting");
 const { resolvePrice } = require("./pricing");
 const { cnToday } = require("./daytime");
@@ -25,27 +27,6 @@ for (const m of ["get", "post", "put", "patch", "delete", "all"]) {
 
 const jsonParseSafe = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
 
-// 应用内通知：写失败不影响主流程，全部包在 try 里；不通知操作者自己
-// meta 是可选的结构化字段(actorName/targetLabel/what)，给前端拼"头像+姓名+对象胶囊+改动说明"
-// 的卡片式展示用；不传就是 null，老式调用点(不需要这套展示)不用改
-async function notifyUsers(userIds, text, link, excludeUserId, meta) {
-  try {
-    const targets = [...new Set((userIds || []).filter((id) => id && id !== excludeUserId))];
-    for (const uid_ of targets) {
-      await db.prepare("INSERT INTO jj_notifications(id,user_id,text,link,created_at,read_at,actor_name,target_label,what) VALUES(?,?,?,?,?,NULL,?,?,?)")
-        .run(uid(), uid_, text, link || null, Date.now(),
-          meta ? meta.actorName : null, meta ? meta.targetLabel : null, meta ? meta.what : null);
-    }
-  } catch (e) { console.error("[notify] 写通知失败", e); }
-}
-// 通知所有管理员/主管(款式/工序/裁床单这类共享主数据被改动时，让其他管理层知道)，不通知操作者自己
-async function notifyManagers(text, link, excludeUserId, meta) {
-  try {
-    const rows = await db.prepare("SELECT id, role FROM users WHERE deleted = 0").all();
-    const mgrIds = rows.filter((u) => A.isManager(u)).map((u) => u.id);
-    await notifyUsers(mgrIds, text, link, excludeUserId, meta);
-  } catch (e) { console.error("[notify] 通知管理员失败", e); }
-}
 // 字段被改动时通知里"改成了 XX"这句该怎么拼：只改一个字段就带上新值；改了好几个字段就把
 // 字段名都列出来(超过3个截断+总数)，不再统一说一句看不出改了啥的"修改了XX"。
 // skipValueKeys 给图片这类不适合塞进一句话通知的字段用，只报字段名不带值。
@@ -470,6 +451,21 @@ router.post("/scan", A.authRequired, async (req, res) => {
     record: await db.prepare("SELECT * FROM jj_scan_records WHERE id=?").get(id),
     bundle, remaining
   });
+
+  // 打完这一笔如果整单到 100%，给管理层发一条完工通知。
+  // 放在响应之后、不 await：这段聚合查询没必要拖慢工人扫码的响应。
+  (async () => {
+    try {
+      const done = await cutting.completedByOrder(order.id);
+      if (order.total_qty > 0 && done >= order.total_qty) {
+        const st = await db.prepare("SELECT code, name FROM jj_styles WHERE id=?").get(order.style_id);
+        const label = `${(st && (st.code || st.name)) || ""} · 床次${order.bed_no}`;
+        await notifyManagers(`${label} 已全部完工`, "/cutorders", null,
+          { actorName: "系统", targetLabel: label,
+            what: `已全部完工（${Math.round(order.total_qty)}件）`, tag: "cut-" + order.id });
+      }
+    } catch (e) { console.error("[notify] 完工检查失败", e); }
+  })();
 });
 
 router.get("/scan", A.authRequired, async (req, res) => {
@@ -899,6 +895,21 @@ router.post("/styles/:id/processes/sync", A.authRequired, A.managerRequired, asy
 });
 
 router.use(cutting.router);
+
+/* ---------------- 系统推送订阅 ----------------
+ * 送达能力有通道限制（iOS 要加到主屏、微信内置浏览器完全不支持），
+ * 所以页面内的红点轮询保留，推送只是锦上添花。
+ */
+router.get("/push/public-key", A.authRequired, (req, res) => res.json({ key: P.publicKey() }));
+router.post("/push/subscribe", A.authRequired, async (req, res) => {
+  const saved = await P.saveSubscription(req.user.id, req.body && req.body.subscription, req.headers["user-agent"]);
+  if (!saved) return res.status(400).json({ error: "订阅信息不完整" });
+  res.json({ ok: true, count: await P.countOf(req.user.id) });
+});
+router.post("/push/unsubscribe", A.authRequired, async (req, res) => {
+  await P.removeSubscription(req.body && req.body.endpoint);
+  res.json({ ok: true });
+});
 
 /* ---------------- 应用内通知 ---------------- */
 const NOTIF_LIMIT = 50;   // 只给最近 50 条，够用又不会让列表无限长
