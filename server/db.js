@@ -227,6 +227,86 @@ const DDL = [
     read_at BIGINT,
     KEY idx_jjnotif_user (user_id, created_at),
     KEY idx_jjnotif_unread (user_id, read_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS jj_cut_orders (
+    id VARCHAR(64) PRIMARY KEY,
+    style_id VARCHAR(64) NOT NULL,
+    bed_no INT NOT NULL,
+    doc_no VARCHAR(64),
+    customer VARCHAR(255),
+    cut_date VARCHAR(16) NOT NULL,
+    ship_date VARCHAR(16),
+    order_no VARCHAR(64),
+    bed_note VARCHAR(500),
+    ticket_note VARCHAR(500),
+    company_name VARCHAR(255),
+    colors MEDIUMTEXT,
+    sizes MEDIUMTEXT,
+    total_bundles INT NOT NULL DEFAULT 0,
+    total_qty DOUBLE NOT NULL DEFAULT 0,
+    source VARCHAR(16) NOT NULL DEFAULT 'self',
+    created_by VARCHAR(64),
+    created_at BIGINT NOT NULL,
+    deleted TINYINT NOT NULL DEFAULT 0,
+    KEY idx_jjco_style (style_id),
+    KEY idx_jjco_date (cut_date),
+    KEY idx_jjco_deleted (deleted, cut_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS jj_cut_bundles (
+    id VARCHAR(64) PRIMARY KEY,
+    order_id VARCHAR(64) NOT NULL,
+    style_id VARCHAR(64) NOT NULL,
+    bundle_no INT NOT NULL,
+    ticket_no BIGINT NOT NULL,
+    color VARCHAR(64),
+    size VARCHAR(32),
+    qty DOUBLE NOT NULL,
+    vat_no VARCHAR(64),
+    note VARCHAR(255),
+    created_at BIGINT NOT NULL,
+    UNIQUE KEY uq_jjcb_ticket (ticket_no),
+    UNIQUE KEY uq_jjcb_order_bundle (order_id, bundle_no),
+    KEY idx_jjcb_order (order_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS jj_cut_order_processes (
+    id VARCHAR(64) PRIMARY KEY,
+    order_id VARCHAR(64) NOT NULL,
+    seq INT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    price_mode VARCHAR(16) NOT NULL DEFAULT 'default',
+    unit_price DOUBLE NOT NULL DEFAULT 0,
+    prices MEDIUMTEXT,
+    show_price TINYINT NOT NULL DEFAULT 1,
+    visible_roles MEDIUMTEXT,
+    style_process_id VARCHAR(64),
+    created_at BIGINT NOT NULL,
+    KEY idx_jjcop_order (order_id, seq)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS jj_process_templates (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    items MEDIUMTEXT NOT NULL,
+    created_by VARCHAR(64),
+    created_at BIGINT NOT NULL,
+    deleted TINYINT NOT NULL DEFAULT 0
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS jj_push_subscriptions (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    endpoint VARCHAR(512) NOT NULL,
+    p256dh VARCHAR(255) NOT NULL,
+    auth VARCHAR(255) NOT NULL,
+    ua VARCHAR(200),
+    fail_count INT NOT NULL DEFAULT 0,
+    last_ok_at BIGINT,
+    created_at BIGINT NOT NULL,
+    UNIQUE KEY uq_jjps_endpoint (endpoint(191)),
+    KEY idx_jjps_user (user_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
 ];
 
@@ -358,6 +438,56 @@ async function init() {
     await pool.query("ALTER TABLE jj_notifications ADD COLUMN target_label VARCHAR(128)");
     await pool.query("ALTER TABLE jj_notifications ADD COLUMN what VARCHAR(500)");
     console.log("[migrate] jj_notifications 增加 actor_name/target_label/what 列");
+  }
+  // 2e~2i：裁床编菲子系统需要的新列。全部"查 information_schema → 不存在才 ALTER"，可反复启动。
+  const hasCol = async (table, col) => {
+    const [r] = await pool.query(
+      "SELECT 1 AS x FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?",
+      [CONF.database, table, col]);
+    return !!r[0];
+  };
+  const addCol = async (table, col, ddl) => {
+    if (await hasCol(table, col)) return;
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    console.log(`[migrate] ${table} 增加 ${col} 列`);
+  };
+
+  // 2e. 款式：是否裁床 + 款式备注
+  await addCol("jj_styles", "has_cutting", "has_cutting TINYINT NOT NULL DEFAULT 1");
+  await addCol("jj_styles", "note", "note VARCHAR(500)");
+
+  // 2f. 款式工序：工序名可自由输入（不再强依赖工序模板）+ 三种价格模式 + 显示价格/可见岗位
+  await addCol("jj_style_processes", "name", "name VARCHAR(255)");
+  await addCol("jj_style_processes", "price_mode", "price_mode VARCHAR(16) NOT NULL DEFAULT 'default'");
+  await addCol("jj_style_processes", "prices", "prices MEDIUMTEXT");
+  await addCol("jj_style_processes", "show_price", "show_price TINYINT NOT NULL DEFAULT 1");
+  await addCol("jj_style_processes", "visible_roles", "visible_roles MEDIUMTEXT");
+
+  // 2g. process_id 放开为可空：自由输入的工序没有对应的工序模板行
+  const [spPid] = await pool.query(
+    "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='jj_style_processes' AND COLUMN_NAME='process_id'",
+    [CONF.database]);
+  if (spPid[0] && spPid[0].IS_NULLABLE === "NO") {
+    await pool.query("ALTER TABLE jj_style_processes MODIFY process_id VARCHAR(64) NULL");
+    console.log("[migrate] jj_style_processes.process_id → 可空");
+  }
+  // 老行没有 name，从工序模板回填一次，否则新界面上工序名是空白
+  await pool.query(`UPDATE jj_style_processes sp JOIN jj_processes p ON p.id = sp.process_id
+    SET sp.name = p.name WHERE sp.name IS NULL OR sp.name = ''`);
+
+  // 2h. 打点记录挂到扎+工序上，并存下当时的单价快照（以后改工价不会追溯已发工资）
+  await addCol("jj_scan_records", "order_id", "order_id VARCHAR(64)");
+  await addCol("jj_scan_records", "bundle_id", "bundle_id VARCHAR(64)");
+  await addCol("jj_scan_records", "order_process_id", "order_process_id VARCHAR(64)");
+  await addCol("jj_scan_records", "unit_price", "unit_price DOUBLE");
+
+  // 2i. 进度聚合按 (扎, 工序) 分组，补索引
+  const [scIdx] = await pool.query(
+    "SELECT 1 AS x FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME='jj_scan_records' AND INDEX_NAME='idx_jjscan_bundle'",
+    [CONF.database]);
+  if (!scIdx[0]) {
+    await pool.query("ALTER TABLE jj_scan_records ADD INDEX idx_jjscan_bundle (bundle_id, order_process_id)");
+    console.log("[migrate] jj_scan_records 增加 idx_jjscan_bundle 索引");
   }
   // 3. 一次性导入 daka 员工（仅生产）
   if (process.env.NODE_ENV !== "test") await importDakaSeed();
