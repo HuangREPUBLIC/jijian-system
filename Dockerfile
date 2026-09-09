@@ -5,6 +5,10 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 COPY server ./server
+# 网页端(PWA)也要进镜像：server/index.js 用 express.static 从 ../public 提供前端，
+# 只拷 server/ 的话容器里没有 public/，起来只有 API、网页打不开。
+# （目前生产是 systemd 直接跑 node，不走这个 Dockerfile；留着是为了它别是错的。）
+COPY public ./public
 
 # 云托管容器监听 80 端口。数据已迁到云托管 Serverless MySQL（连接信息走环境变量，
 # 在「服务设置 → 环境变量」里配 MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_PASSWORD/MYSQL_DATABASE，
