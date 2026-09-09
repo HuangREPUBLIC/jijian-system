@@ -169,6 +169,50 @@ async function call(method, p, token, body) {
   const notExistRes = await call("GET", "/styles/xxx-not-exist/syncable-orders", aT);
   ok(notExistRes.status === 404, "不存在的款式返回404");
 
+  // —— 扫扎打点 ——
+  // 建一张 2 道工序的单：1 扎 10 件
+  await call("PUT", `/styles/${sid2}/processes`, aT, {
+    items: [
+      { name: "剪线", priceMode: "default", unitPrice: 1, showPrice: true },
+      { name: "烫工", priceMode: "size", unitPrice: 2, prices: { S: 3 }, showPrice: true }
+    ]
+  });
+  const so = (await call("POST", "/cut-orders", aT, {
+    styleId: sid2, bedNo: 21, cutDate: "2026-09-09", colors: ["A"], sizes: ["S"],
+    startNo: 1, multiple: true, cells: { "A|S": { input: 10, bundles: 1 } }
+  })).j.order.id;
+  const sd = await call("GET", `/cut-orders/${so}`, aT);
+  const bundle1 = sd.j.bundles[0], procCut = sd.j.processes[0], procIron = sd.j.processes[1];
+
+  // 按菲票号扫，不传 qty = 完成整扎
+  const scan1 = await call("POST", "/scan", wT, { ticketNo: bundle1.ticket_no, orderProcessId: procCut.id, date: "2026-09-09" });
+  ok(scan1.status === 200 && scan1.j.record.qty === 10, "不传件数=完成整扎");
+  ok(scan1.j.record.unit_price === 1, "写入了默认单价快照");
+  ok(scan1.j.remaining === 0, "该工序剩余 0 件");
+
+  // —— T6 超额被拒 ——
+  ok((await call("POST", "/scan", wT, { ticketNo: bundle1.ticket_no, orderProcessId: procCut.id, qty: 1, date: "2026-09-09" })).status === 400,
+    "同一扎同一工序超额打点被拒");
+
+  // —— T7 分码单价 ——
+  const scan2 = await call("POST", "/scan", wT, { orderId: so, bundleNo: 1, orderProcessId: procIron.id, qty: 4, date: "2026-09-09" });
+  ok(scan2.status === 200 && scan2.j.record.unit_price === 3, "分码单价按该扎尺码取到 S 的 3 元");
+  ok(scan2.j.remaining === 6, "剩余件数正确");
+
+  // —— T8 改工价不追溯历史工资 ——
+  const payBefore = (await call("GET", "/payroll/mine?month=2026-09", wT)).j.pieceWage;
+  ok(payBefore === 10 * 1 + 4 * 3, "工资 = 10×1 + 4×3 = 22");
+  await call("PUT", `/styles/${sid2}/processes`, aT, {
+    items: [
+      { name: "剪线", priceMode: "default", unitPrice: 99, showPrice: true },
+      { name: "烫工", priceMode: "default", unitPrice: 99, showPrice: true }
+    ]
+  });
+  ok((await call("GET", "/payroll/mine?month=2026-09", wT)).j.pieceWage === payBefore, "改工价后历史工资不变（用的是记录里的价格快照）");
+
+  // 扎号/菲票号不存在
+  ok((await call("POST", "/scan", wT, { ticketNo: 999999999, orderProcessId: procCut.id })).status === 400, "菲票号不存在时报错");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

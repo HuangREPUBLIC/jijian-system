@@ -6,6 +6,7 @@ const { db, pool, uid, getSetting, setSetting, UPLOAD_DIR } = require("./db");
 const A = require("./auth");
 const { logOp } = require("./oplog");
 const cutting = require("./routes_cutting");
+const { resolvePrice } = require("./pricing");
 
 const router = express.Router();
 
@@ -349,21 +350,75 @@ router.delete("/styles/:id", A.authRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------------- 打点（计件记录） ---------------- */
+/* ---------------- 打点 ----------------
+ * 两种形态：
+ *   1) 扫扎（主流程）：给 ticketNo 或 (orderId,bundleNo) + orderProcessId，
+ *      不给 qty 就是"完成整扎剩余"。单价按该扎尺码/打点人岗位解析后存进记录快照。
+ *   2) 自由打点（小程序端过渡期）：给 processId + qty，走老逻辑，单价留空由工资那边回落全局单价。
+ */
 router.post("/scan", A.authRequired, async (req, res) => {
-  const { styleId, processId, date, qty, userId } = req.body || {};
-  if (!processId || !date || qty === undefined) return res.status(400).json({ error: "缺少工序/日期/数量" });
-  const proc = await db.prepare("SELECT * FROM jj_processes WHERE id = ? AND deleted = 0").get(processId);
-  if (!proc) return res.status(400).json({ error: "工序不存在" });
+  const { ticketNo, orderId, bundleNo, orderProcessId, processId, styleId, userId } = req.body || {};
+  const date = (req.body && req.body.date) || new Date().toISOString().slice(0, 10);
+
   let targetUserId = req.user.id;
   if (userId && userId !== req.user.id) {
     if (!A.canActAsAdmin(req.user)) return res.status(403).json({ error: "没有权限代别人打点" });
     targetUserId = userId;
   }
+  const actor = targetUserId === req.user.id ? req.user : await A.userById(targetUserId);
+  if (!actor) return res.status(400).json({ error: "员工不存在" });
+
+  const isBundleScan = ticketNo !== undefined || (orderId !== undefined && bundleNo !== undefined);
+  if (!isBundleScan) {
+    // —— 老的自由打点 ——
+    if (!processId || req.body.qty === undefined) return res.status(400).json({ error: "缺少工序/数量" });
+    const proc = await db.prepare("SELECT * FROM jj_processes WHERE id = ? AND deleted = 0").get(processId);
+    if (!proc) return res.status(400).json({ error: "工序不存在" });
+    const id = uid();
+    await db.prepare(
+      "INSERT INTO jj_scan_records(id,user_id,style_id,process_id,date,qty,created_at) VALUES(?,?,?,?,?,?,?)")
+      .run(id, targetUserId, styleId || null, processId, date, Number(req.body.qty), Date.now());
+    return res.json({ record: await db.prepare("SELECT * FROM jj_scan_records WHERE id=?").get(id) });
+  }
+
+  // —— 扫扎打点 ——
+  const bundle = ticketNo !== undefined
+    ? await db.prepare("SELECT * FROM jj_cut_bundles WHERE ticket_no = ?").get(Number(ticketNo))
+    : await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id = ? AND bundle_no = ?").get(orderId, Number(bundleNo));
+  if (!bundle) return res.status(400).json({ error: "找不到这张菲票，请确认扎号/菲票号" });
+
+  const order = await db.prepare("SELECT * FROM jj_cut_orders WHERE id=? AND deleted=0").get(bundle.order_id);
+  if (!order) return res.status(400).json({ error: "这张菲票所属的裁床单已删除" });
+
+  const proc = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE id=? AND order_id=?")
+    .get(orderProcessId, bundle.order_id);
+  if (!proc) return res.status(400).json({ error: "工序不存在或不属于这张裁床单" });
+
+  const doneRow = await db.prepare(
+    "SELECT COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? AND order_process_id=?")
+    .get(bundle.id, proc.id);
+  const done = Number(doneRow.done) || 0;
+  const left = bundle.qty - done;
+  if (left <= 0) return res.status(400).json({ error: `扎号 ${bundle.bundle_no} 的「${proc.name}」已经做完了` });
+
+  const qty = req.body.qty === undefined || req.body.qty === "" ? left : Number(req.body.qty);
+  if (!(qty > 0)) return res.status(400).json({ error: "件数要大于 0" });
+  if (qty > left) return res.status(400).json({ error: `超了，扎号 ${bundle.bundle_no} 的「${proc.name}」只剩 ${left} 件` });
+
+  // 单价在打点这一刻定死：之后改工价不会追溯改动已经算过的工资
+  const unitPrice = resolvePrice(proc, { size: bundle.size, role: actor.role });
+
   const id = uid();
-  await db.prepare("INSERT INTO jj_scan_records(id,user_id,style_id,process_id,date,qty,created_at) VALUES(?,?,?,?,?,?,?)")
-    .run(id, targetUserId, styleId || null, processId, date, Number(qty), Date.now());
-  res.json({ record: await db.prepare("SELECT * FROM jj_scan_records WHERE id=?").get(id) });
+  await db.prepare(
+    `INSERT INTO jj_scan_records(id,user_id,style_id,process_id,date,qty,created_at,order_id,bundle_id,order_process_id,unit_price)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, targetUserId, bundle.style_id, proc.style_process_id || null, date, qty, Date.now(),
+      order.id, bundle.id, proc.id, unitPrice);
+
+  res.json({
+    record: await db.prepare("SELECT * FROM jj_scan_records WHERE id=?").get(id),
+    bundle, remaining: left - qty
+  });
 });
 
 router.get("/scan", A.authRequired, async (req, res) => {
@@ -459,10 +514,13 @@ router.get("/efficiency/summary", A.authRequired, async (req, res) => {
 });
 
 /* ---------------- 薪资管理：计件工资 = sum(打点数量 × 工序单价)，再加餐补/奖金/扣罚 ---------------- */
+// 计件工资 = Σ(件数 × 单价)。单价优先用打点当时存下的快照，没有快照的老记录
+// （自由打点）才回落到全局工序单价——这样改工价不会追溯改动历史工资。
+// JOIN 改 LEFT JOIN：扫扎产生的记录 process_id 指向款式工序，在 jj_processes 里没有对应行。
 async function pieceWage(userId, datePattern) {
   const row = await db.prepare(`
-    SELECT COALESCE(SUM(s.qty * COALESCE(p.unit_price, 0)), 0) AS w
-    FROM jj_scan_records s JOIN jj_processes p ON p.id = s.process_id
+    SELECT COALESCE(SUM(s.qty * COALESCE(s.unit_price, p.unit_price, 0)), 0) AS w
+    FROM jj_scan_records s LEFT JOIN jj_processes p ON p.id = s.process_id
     WHERE s.user_id = ? AND s.date LIKE ?
   `).get(userId, datePattern);
   return row ? row.w : 0;
