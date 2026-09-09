@@ -25,6 +25,8 @@ async function logOp(userId, action) {
     .run(uid(), userId || null, action, Date.now());
 }
 
+const jsonParseSafe = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
+
 // 应用内通知：写失败不影响主流程，全部包在 try 里；不通知操作者自己
 // meta 是可选的结构化字段(actorName/targetLabel/what)，给前端拼"头像+姓名+对象胶囊+改动说明"
 // 的卡片式展示用；不传就是 null，老式调用点(不需要这套展示)不用改
@@ -595,16 +597,67 @@ router.delete("/style-options", A.authRequired, async (req, res) => {
 });
 
 /* ---------------- 款式关联的生产工序（从工序模板选，可单独改价） ---------------- */
-router.get("/styles/:id/processes", A.authRequired, async (req, res) => {
+// GET 和 PUT 都要返回同一种形状，抽出来复用，避免两处映射逻辑漂移。
+// LEFT JOIN（不是 JOIN）：process_id 可空（自由输入的工序名没有对应的工序模板行），
+// INNER JOIN 会把这些行吃掉，导致新建的工序在列表里凭空消失。
+async function styleProcessList(styleId) {
   const rows = await db.prepare(`
     SELECT sp.*, p.name AS process_name, p.unit AS process_unit, p.unit_price AS template_price
-    FROM jj_style_processes sp JOIN jj_processes p ON p.id = sp.process_id
-    WHERE sp.style_id = ? ORDER BY sp.seq ASC
-  `).all(req.params.id);
-  const list = rows.map((r) => Object.assign({}, r, {
-    effectivePrice: r.unit_price !== null && r.unit_price !== undefined ? r.unit_price : r.template_price
+    FROM jj_style_processes sp LEFT JOIN jj_processes p ON p.id = sp.process_id
+    WHERE sp.style_id = ? ORDER BY sp.seq ASC`).all(styleId);
+  return rows.map((r) => ({
+    id: r.id, style_id: r.style_id, process_id: r.process_id, seq: r.seq,
+    name: r.name || r.process_name || "",
+    price_mode: r.price_mode || "default",
+    unit_price: Number(r.unit_price) || 0,
+    prices: jsonParseSafe(r.prices, {}),
+    show_price: r.show_price !== 0,
+    visible_roles: jsonParseSafe(r.visible_roles, []),
+    process_unit: r.process_unit || null,
+    // 列表/合计用的"这道工序的默认价"：自己的价优先，没设过才回落工序模板的价
+    effectivePrice: (r.unit_price !== null && r.unit_price !== undefined)
+      ? Number(r.unit_price) : (Number(r.template_price) || 0)
   }));
-  res.json({ list });
+}
+// 款式工序：工序名可以自由输入（name 列），也可以从工序模板挑（process_id）。
+// 老数据只有 process_id，name 由迁移回填过；这里再兜一次底，免得历史脏数据显示空白。
+router.get("/styles/:id/processes", A.authRequired, async (req, res) => {
+  res.json({ list: await styleProcessList(req.params.id) });
+});
+// 工序编辑器一次提交整套工序：先清空再重写。逐条 POST/PATCH/DELETE 在"改序号 + 改模式 +
+// 删中间一条"混在一起时很难保证一致，整套覆盖简单且天然幂等。
+// 老的逐条接口保留给小程序端过渡期用，两边写的是同一张表。
+router.put("/styles/:id/processes", A.authRequired, async (req, res) => {
+  const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
+  if (!style) return res.status(404).json({ error: "款式不存在" });
+  const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  for (const it of items) {
+    if (!String(it.name || "").trim()) return res.status(400).json({ error: "工序名称不能为空" });
+    if (it.priceMode && !["default", "size", "role"].includes(it.priceMode)) {
+      return res.status(400).json({ error: "价格模式不对" });
+    }
+  }
+  const now = Date.now();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM jj_style_processes WHERE style_id = ?", [style.id]);
+    if (items.length) {
+      await conn.query(
+        `INSERT INTO jj_style_processes(id,style_id,process_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,created_at)
+         VALUES ?`,
+        [items.map((it, i) => [uid(), style.id, it.processId || null, i + 1,
+          String(it.name).trim(), it.priceMode || "default", Number(it.unitPrice) || 0,
+          it.prices ? JSON.stringify(it.prices) : null,
+          it.showPrice === false ? 0 : 1,
+          Array.isArray(it.visibleRoles) && it.visibleRoles.length ? JSON.stringify(it.visibleRoles) : null,
+          now])]);
+    }
+    await conn.commit();
+  } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+
+  await logOp(req.user.id, `款式「${style.name}」保存工序：${items.length} 道`);
+  res.json({ list: await styleProcessList(style.id) });
 });
 router.post("/styles/:id/processes", A.authRequired, async (req, res) => {
   const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
@@ -631,6 +684,31 @@ router.delete("/style-processes/:id", A.authRequired, async (req, res) => {
   const sp = await db.prepare("SELECT * FROM jj_style_processes WHERE id=?").get(req.params.id);
   if (!sp) return res.status(404).json({ error: "记录不存在" });
   await db.prepare("DELETE FROM jj_style_processes WHERE id=?").run(sp.id);
+  res.json({ ok: true });
+});
+
+/* ---------------- 工序模板（整套工序清单，跟 jj_processes 的单条定额模板是两回事） ---------------- */
+router.get("/process-templates", A.authRequired, async (req, res) => {
+  const rows = await db.prepare(
+    "SELECT * FROM jj_process_templates WHERE deleted=0 ORDER BY created_at DESC").all();
+  res.json({ list: rows.map((r) => ({ id: r.id, name: r.name, items: jsonParseSafe(r.items, []), created_at: r.created_at })) });
+});
+router.post("/process-templates", A.authRequired, async (req, res) => {
+  const name = String((req.body && req.body.name) || "").trim();
+  const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  if (!name) return res.status(400).json({ error: "请填写模板名称" });
+  if (!items.length) return res.status(400).json({ error: "模板里至少要有一道工序" });
+  const id = uid();
+  await db.prepare("INSERT INTO jj_process_templates(id,name,items,created_by,created_at,deleted) VALUES(?,?,?,?,?,0)")
+    .run(id, name, JSON.stringify(items), req.user.id, Date.now());
+  await notifyManagers(`${req.user.name} 新增了工序模板「${name}」`, "/styles", req.user.id,
+    { actorName: req.user.name, targetLabel: name, what: `保存了 ${items.length} 道工序的模板` });
+  res.json({ template: { id, name, items } });
+});
+router.delete("/process-templates/:id", A.authRequired, async (req, res) => {
+  const t = await db.prepare("SELECT * FROM jj_process_templates WHERE id=? AND deleted=0").get(req.params.id);
+  if (!t) return res.status(404).json({ error: "模板不存在" });
+  await db.prepare("UPDATE jj_process_templates SET deleted=1 WHERE id=?").run(t.id);
   res.json({ ok: true });
 });
 
