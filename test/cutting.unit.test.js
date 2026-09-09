@@ -22,6 +22,31 @@ const ok = (c, n) => { if (c) { pass++; console.log("PASS " + n); } else { fail+
   ok(r.totalQty === 156, "S 码总件数 156");
 }
 
+// —— qtys：同一格内每扎件数不同（实拍数据，224暗蓝/331浅蓝条 S 码逐扎不等分）——
+{
+  const cells = {
+    [cellKey("223暗蓝", "S")]: { qtys: [52, 36, 52, 36] },
+    [cellKey("331浅蓝条", "S")]: { qtys: [26, 28, 26, 28] }
+  };
+  const r = planBundles({ colors: ["223暗蓝", "331浅蓝条"], sizes: ["S"], cells, startNo: 1, multiple: true });
+  const got = r.bundles.map((b) => `${b.bundleNo}=${b.color}${b.qty}`).join(",");
+  ok(got === "1=223暗蓝52,2=331浅蓝条26,3=223暗蓝36,4=331浅蓝条28,5=223暗蓝52,6=331浅蓝条26,7=223暗蓝36,8=331浅蓝条28",
+    "qtys 逐扎件数按数组顺序取，扎号序列跟实拍截图对上");
+  ok(r.totalQty === 176 + 108, "qtys 总件数 = 223暗蓝S合计176 + 331浅蓝条S合计108，跟截图颜色合计对上");
+}
+
+// —— qtys 与 input/bundles 同时给时，qtys 优先 ——
+{
+  const k = cellKey("A", "S");
+  const r = planBundles({
+    colors: ["A"], sizes: ["S"],
+    cells: { [k]: { input: 999, bundles: 999, qtys: [5, 7] } },
+    startNo: 1, multiple: true
+  });
+  ok(r.bundles.length === 2, "qtys 给了就用它的扎数，忽略 bundles");
+  ok(r.bundles.map((b) => b.qty).join(",") === "5,7", "qtys 给了就用它的件数，忽略 input");
+}
+
 // —— 多尺码：尺码是外层循环 ——
 {
   const r = planBundles({

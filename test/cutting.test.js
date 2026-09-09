@@ -281,6 +281,8 @@ async function call(method, p, token, body) {
   ok(pdRange.j.bundles.map(b => b.bundle_no).join(",") === "2,3", "按扎号范围过滤");
   const pdPicks = await call("GET", `/cut-orders/${orderId}/print-data?picks=1,4`, aT);
   ok(pdPicks.j.bundles.map(b => b.bundle_no).join(",") === "1,4", "任选扎号打印，picks 覆盖 from/to");
+  const pdBadPicks = await call("GET", `/cut-orders/${orderId}/print-data?picks=abc`, aT);
+  ok(pdBadPicks.status === 400, "picks 全部解析不出有效扎号时返回400，不能悄悄退化成打印全部扎");
   ok((await call("GET", `/cut-orders/${orderId}/print-data`, wT)).status === 403, "计件工不能取打印数据");
 
   console.log(`\n${pass} passed, ${fail} failed`);

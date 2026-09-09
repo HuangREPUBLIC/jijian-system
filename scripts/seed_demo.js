@@ -6,9 +6,30 @@
  * 颜色/尺码数组的顺序 = 矩阵行列顺序 = 扎号编号的遍历顺序。截图里 扎号1 是 S 码的
  * 223暗蓝，所以尺码数组从 S 排起、颜色数组从 223暗蓝 排起，不是按选择器里的显示顺序。
  */
+
+// 生产库防呆：wipe() 是真的 DELETE FROM jj_cut_orders/jj_styles/... （按款号删），注释里写了
+// "生产不要执行"但代码本身没拦过——配了生产库连接串的 shell 里直接 node scripts/seed_demo.js
+// （绕过 npm run seed:demo 里写死的 MYSQL_DATABASE=jijian_dev）就会真删生产数据。这里在做任何
+// require/连接之前先挡一道：库名不含 dev/demo/test 就拒绝执行，除非显式 SEED_FORCE=1。
+const SEED_DB_NAME = process.env.MYSQL_DATABASE || process.env.MYSQL_DB || "jijian";
+if (!/dev|demo|test/i.test(SEED_DB_NAME) && process.env.SEED_FORCE !== "1") {
+  console.error(
+    `[seed] 拒绝执行：当前数据库名是 "${SEED_DB_NAME}"，库名里不含 dev/demo/test，看起来可能是生产库。\n` +
+    "本脚本会先删除 FC3390 裤 / FC3390-1 / FA10053 相关的款式与裁床单（含其菲票、打点记录），\n" +
+    "再重新造一遍演示数据；误连生产库执行会真删生产数据，不可恢复。\n" +
+    "确认这确实是一个可以随意清空重造的库之后，加 SEED_FORCE=1 强制执行，例如：\n" +
+    "  SEED_FORCE=1 node scripts/seed_demo.js"
+  );
+  process.exit(1);
+}
+
 const path = require("path");
 const { init, db, pool, uid } = require(path.join(__dirname, "..", "server", "db"));
 const { planBundles, cellKey } = require(path.join(__dirname, "..", "server", "cutting"));
+// 取菲票号必须跟正常建单走同一套加锁逻辑：nextTicketRange 用 SELECT...FOR UPDATE 锁行，
+// 防止本地 `npm run dev:local` 起着服务、另开终端跑 `npm run seed:demo` 时两边撞号——
+// "菲票号互不相同"是有测试断言保护的不变量，种子脚本不能自己另起一套裸读裸写的取号逻辑。
+const { nextTicketRange } = require(path.join(__dirname, "..", "server", "routes_cutting"));
 
 const COMPANY = "惠民县惠锦服装制衣有限公司";
 const CUSTOMER = "天津锦利国际贸易有限公司";
@@ -50,39 +71,51 @@ async function makeProcesses(styleId, items) {
   }
 }
 
-// 直接写库造裁床单（不走 HTTP），但复用同一个 planBundles，保证跟界面上生成的结果一致
+// 直接写库造裁床单（不走 HTTP），但复用同一个 planBundles，保证跟界面上生成的结果一致。
+// 取号 + 建单头 + 建扎 + 建工序快照 全部放同一个事务里，跟 routes_cutting.js 的
+// POST /cut-orders 一样：取号必须在事务内、用同一把行锁，否则跟运行中的服务并发建单会撞号。
 async function makeOrder(styleId, opts) {
   const plan = planBundles({
     colors: opts.colors, sizes: opts.sizes, cells: opts.cells,
     startNo: 1, multiple: true
   });
   const orderId = uid(), now = Date.now();
-  await db.prepare(
-    `INSERT INTO jj_cut_orders(id,style_id,bed_no,doc_no,customer,cut_date,ship_date,order_no,
-      bed_note,ticket_note,company_name,colors,sizes,total_bundles,total_qty,source,created_by,created_at,deleted)
-     VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,'self',NULL,?,0)`)
-    .run(orderId, styleId, opts.bedNo, opts.docNo, CUSTOMER, opts.cutDate, opts.shipDate,
-      COMPANY, JSON.stringify(opts.colors), JSON.stringify(opts.sizes),
-      plan.totalBundles, plan.totalQty, now);
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const startTicket = await nextTicketRange(conn, plan.totalBundles);
 
-  const seqRow = await db.prepare("SELECT value FROM settings WHERE `key`='jj_ticket_seq'").get();
-  let ticket = seqRow ? Number(JSON.parse(seqRow.value)) || 36000 : 36000;
-  for (const b of plan.bundles) {
-    await db.prepare(
-      "INSERT INTO jj_cut_bundles(id,order_id,style_id,bundle_no,ticket_no,color,size,qty,vat_no,note,created_at) VALUES(?,?,?,?,?,?,?,?,NULL,NULL,?)")
-      .run(uid(), orderId, styleId, b.bundleNo, ticket++, b.color, b.size, b.qty, now);
-  }
-  await db.prepare(
-    "INSERT INTO settings(`key`,value) VALUES('jj_ticket_seq',?) ON DUPLICATE KEY UPDATE value=VALUES(value)")
-    .run(JSON.stringify(ticket));
+    await conn.query(
+      `INSERT INTO jj_cut_orders(id,style_id,bed_no,doc_no,customer,cut_date,ship_date,order_no,
+        bed_note,ticket_note,company_name,colors,sizes,total_bundles,total_qty,source,created_by,created_at,deleted)
+       VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,'self',NULL,?,0)`,
+      [orderId, styleId, opts.bedNo, opts.docNo, CUSTOMER, opts.cutDate, opts.shipDate,
+        COMPANY, JSON.stringify(opts.colors), JSON.stringify(opts.sizes),
+        plan.totalBundles, plan.totalQty, now]);
 
-  const sps = await db.prepare("SELECT * FROM jj_style_processes WHERE style_id=? ORDER BY seq ASC").all(styleId);
-  for (const sp of sps) {
-    await db.prepare(
-      `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
-       VALUES(?,?,?,?,?,?,?,1,NULL,?,?)`)
-      .run(uid(), orderId, sp.seq, sp.name, sp.price_mode, sp.unit_price, sp.prices, sp.id, now);
+    await conn.query(
+      `INSERT INTO jj_cut_bundles(id,order_id,style_id,bundle_no,ticket_no,color,size,qty,vat_no,note,created_at)
+       VALUES ?`,
+      [plan.bundles.map((b, i) =>
+        [uid(), orderId, styleId, b.bundleNo, startTicket + i, b.color, b.size, b.qty, b.vatNo || null, null, now])]);
+
+    const [sps] = await conn.query(
+      "SELECT * FROM jj_style_processes WHERE style_id = ? ORDER BY seq ASC", [styleId]);
+    if (sps.length) {
+      await conn.query(
+        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
+         VALUES ?`,
+        [sps.map((sp) => [uid(), orderId, sp.seq, sp.name, sp.price_mode, sp.unit_price, sp.prices,
+          sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.id, now])]);
+    }
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
   }
+
   console.log(`[seed] ${opts.docNo || ""} 床次${opts.bedNo}：${plan.totalBundles} 扎 ${plan.totalQty} 件`);
   return orderId;
 }
@@ -95,11 +128,7 @@ async function makeOrder(styleId, opts) {
   const s1 = await makeStyle("FC3390 裤", "");
   await makeProcesses(s1, [{ name: "剪线", unitPrice: 0 }, { name: "烫工", unitPrice: 0 }]);
   const colors1 = ["223暗蓝", "331浅蓝条"];
-  // 床次2：64 扎 2272 件。S/M 用截图里的真实数字，其余尺码按同样的形状铺开。
-  const cells2 = {};
-  // multiple 模式下同一格两个数会被合并成 input=arr[0]+arr[1] 后原样复制两扎（见下方
-  // for 循环的注释），所以 S/M 用真实数字后，L/XL/2XL 按同样的颜色配比放大到 2 倍，
-  // 让 2 校验对上 2272：284(S) + 284(M) + 568(L) + 568(XL) + 568(2XL) = 2272。
+  // 床次2：S/M 用截图里的真实逐扎数字，其余尺码按同样的形状铺开。
   const perSize = {
     S:   { "223暗蓝": [52, 36], "331浅蓝条": [26, 28] },
     M:   { "223暗蓝": [52, 36], "331浅蓝条": [26, 28] },
@@ -107,13 +136,15 @@ async function makeOrder(styleId, opts) {
     XL:  { "223暗蓝": [104, 72], "331浅蓝条": [52, 56] },
     "2XL": { "223暗蓝": [104, 72], "331浅蓝条": [52, 56] }
   };
-  // planBundles 一个格子只能给一个"每扎件数"，两种件数（52 和 36）拆成两次调用不现实，
-  // 所以这里按"倍数模式关闭"传该格总件数 + 扎数，让它平分——种子数据不需要跟实拍逐扎相等，
-  // 逐扎相等的断言已经由 cutting.unit.test.js 的 S 码那组守住了。
+  // 用 qtys 显式给出逐扎件数（现场同一色同一码可以分几次铺布，每次层数不同，件数自然不同，
+  // 均匀模式表达不了这种情况）：每个格子铺 4 扎，两个实拍数字各出现两次——S 码就是截图里的
+  // 52/36/52/36 与 26/28/26/28；其余尺码按同样的"两个数各来两次"的形状铺开，各格总件数
+  // = 2*(arr[0]+arr[1])，跟改之前均分写法的总数完全一致，所以整单总件数仍然精确等于 2272。
+  const cells2 = {};
   for (const size of SIZES) {
     for (const color of colors1) {
       const arr = perSize[size][color];
-      cells2[cellKey(color, size)] = { input: arr[0] + arr[1], bundles: 2 };
+      cells2[cellKey(color, size)] = { qtys: [arr[0], arr[1], arr[0], arr[1]] };
     }
   }
   await makeOrder(s1, {

@@ -27,8 +27,13 @@ function splitQty(total, bundles) {
  * @param {string[]} input.colors   矩阵行顺序
  * @param {string[]} input.sizes    矩阵列顺序 = 编号外层顺序
  * @param {object}   input.cells    { [cellKey(color,size)]: { input:number, bundles:number } }
+ *   格子还支持一个可选的 `qtys: number[]` 字段——显式给出该格逐扎的件数。
+ *   现场同一个(颜色,尺码)可以分几次铺布，每次层数不同，件数自然不同（比如实拍
+ *   S 码 223暗蓝 是 4 扎 52/36/52/36 件），`{input,bundles}` 这种"一格一个值"的
+ *   均匀模型表达不了这种情况，所以加一条显式路径：给了 `qtys` 就按数组原样取，
+ *   扎数=数组长度、忽略 input/bundles/multiple；没给 `qtys` 时行为跟以前完全一样。
  * @param {number}   [input.startNo=1]     从第几扎起（自动编号时）
- * @param {boolean}  [input.multiple=true] 倍数模式：input 是每扎件数；关闭时 input 是该格总件数
+ * @param {boolean}  [input.multiple=true] 倍数模式：input 是每扎件数；关闭时 input 是该格总件数（对 qtys 无效）
  * @param {object}   [input.customNos]     { [cellKey]: number[] } 自定义扎号，按该格扎序
  * @param {object}   [input.vatNos]        { [cellKey]: string[] } 自定义缸号，按该格扎序
  * @returns {{bundles: Array, totalBundles: number, totalQty: number}}
@@ -47,6 +52,14 @@ function planBundles(input) {
     for (const size of sizes) {
       const k = cellKey(color, size);
       const c = cells[k] || {};
+      if (Array.isArray(c.qtys) && c.qtys.length) {
+        // 显式逐扎件数优先：不受 multiple 开关影响，也不看 input/bundles。
+        // <=0 或非数字的元素直接跳过——不产生扎，不是当 0 件的扎占个位置。
+        plan[k] = c.qtys
+          .map((q) => Number(q))
+          .filter((q) => Number.isFinite(q) && q > 0);
+        continue;
+      }
       const n = Math.max(0, Math.floor(Number(c.bundles) || 0));
       const v = Number(c.input) || 0;
       if (!n || v <= 0) { plan[k] = []; continue; }

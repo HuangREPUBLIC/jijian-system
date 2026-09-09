@@ -474,7 +474,14 @@ router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, asyn
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
 
   let bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
-  const picks = String(req.query.picks || "").split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
+  // picksRaw 有值但一个有效扎号都解析不出来（比如 ?picks=abc、picks=0,-1、用了中文逗号）时必须
+  // 400，不能悄悄掉进下面的 from/to 分支——那时 from/to 都是 undefined，会把整单的扎全部返回，
+  // 打印场景下就是多打印、贴错票。
+  const picksRaw = req.query.picks;
+  const picks = String(picksRaw || "").split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
+  if (picksRaw !== undefined && picksRaw !== "" && !picks.length) {
+    return res.status(400).json({ error: "扎号格式不对，picks 应为逗号分隔的正整数" });
+  }
   if (picks.length) {
     const set = new Set(picks);
     bundles = bundles.filter((b) => set.has(b.bundle_no));
