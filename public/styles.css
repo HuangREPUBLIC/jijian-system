@@ -792,3 +792,7 @@ img{outline:1px solid rgba(0,0,0,.1);outline-offset:-1px}
 /* 桌面端已经有面包屑（首页 › 生产管理 › 生产进度），navbar 里的「‹ 返回」是重复的一层导航，
    两个一起出现会让人以为有两级可退。手机没有面包屑，那里必须保留返回按钮。 */
 @media (min-width:768px){ .nav-slot.mobile-only{visibility:hidden} }
+
+/* 工序编辑器：表头小注与公式说明 */
+.th-note{display:block;font-weight:400;font-size:var(--fs-micro);color:var(--ink-3);margin-top:1px}
+.pe-hint{color:var(--ink-2);font-size:var(--fs-cap);line-height:1.5;padding:8px 2px 2px;text-wrap:pretty}

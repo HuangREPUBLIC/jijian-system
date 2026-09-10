@@ -119,10 +119,19 @@ function toast(s, sticky) {
 const me = () => state.me;
 // 跟服务端 auth.js 的 isManager 保持一致：管理员 + 技术主管/业务主管才看得到
 // 「管理」页面（员工列表/新增员工）和「薪资管理」入口。
-const SUPERVISOR_ROLES = ["r1785125327446", "r1785125333976", "tech_lead", "biz_lead"];
+// 跟 server/auth.js 的 SUPERVISOR_ROLES 保持一致：branch_lead 是本系统的分厂主管，
+// 后面几个是跟单系统导入员工时带来的老岗位键，留着不把已有的人踢出权限
+const SUPERVISOR_ROLES = ["branch_lead", "r1785125327446", "r1785125333976", "tech_lead", "biz_lead"];
 const isAdmin = () => !!me() && me().role === "admin";
 const isManager = () => !!me() && (me().role === "admin" || SUPERVISOR_ROLES.indexOf(me().role) >= 0);
-const roleLabelOf = u => u ? (u.roleLabel || (u.role === "admin" ? "管理员" : "员工")) : "";
+// 跟单系统导员工时带过来的老岗位键。这些岗位在车间计件里没有意义，
+// 管理员应该把这些人改成本系统的四个岗位之一；在改之前，至少别在界面上显示原始键。
+const LEGACY_ROLE_LABELS = {
+  sales: "业务员（跟单系统）", follower: "下厂员（跟单系统）",
+  tech_lead: "技术主管（跟单系统）", biz_lead: "业务主管（跟单系统）",
+  r1785125327446: "技术主管（跟单系统）", r1785125333976: "业务主管（跟单系统）"
+};
+const roleLabelOf = u => u ? (u.roleLabel || (u.role === "admin" ? "工厂管理员" : "员工")) : "";
 // 员工名单：管理员不算计件工人，考勤录入的选人、管理页的员工表格都不列他们
 const staffUsers = () => (state.users || []).filter(u => u.role !== "admin");
 const COMPANY_NAME = "惠锦制衣有限公司";
@@ -276,6 +285,7 @@ async function loadView(v) {
         styleSizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
         colors: String((st && st.color) || "").split(",").map(x => x.trim()).filter(Boolean),
         sizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
+        custOpen: false, custKw: "",
         cells: {}, startNo: 1,
         // multiple 默认开：车间的说法是"件数=每张菲票多少件，扎数=打几张菲票"，
         // 关掉是"把总件数按扎数平分"，那是少数情况。
@@ -1051,6 +1061,10 @@ function optPickerHtml(type) {
 /* ---------- 工序编辑器：款式表单里的「生产工序」段落和款式列表的「修改工序」页共用这一份 ----------
  * 之前那版只有 序号/工序名/工价，而且没有工序模板就完全加不了工序（"请先去工序模板里添加"
  * 是条死路）。现在工序名直接打字就能加，工序模板降级成可选的快捷来源。 */
+// 工价按"一个工人一天挣多少"倒推：工价 = 日工资基数 ÷ 日定额。
+// 例：日定额 909 件 → 工价 100/909 ≈ 0.11 元/件。
+// 这个基数要随行情调整时，改这一个数字即可（车间涨工资就往上调）。
+const DAILY_WAGE_BASE = 100;
 const PRICE_MODES = [["default", "默认单价"], ["size", "分码单价"], ["role", "分岗位单价"]];
 function peTotal() {
   return (state.pe.items || []).reduce((s, it) => s + (Number(it.unitPrice) || 0), 0);
@@ -1087,7 +1101,7 @@ function procEditorHtml() {
     </div>
 
     <div class="card"><div class="tbl-wrap"><table class="tbl pe-tbl">
-      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th><th>日定额</th>
+      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th><th>日定额<span class="th-note">件/天</span></th>
         ${cols.map((c) => `<th>${esc(mode === "role" ? peRoleLabel(c) : c)}</th>`).join("")}
         <th>显示价格</th><th>可见岗位</th></tr>
       ${pe.items.length ? pe.items.map((it, i) => `<tr>
@@ -1113,6 +1127,8 @@ function procEditorHtml() {
       </tr>`).join("") : `<tr><td colspan="${6 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
     </table></div></div>
 
+    <div class="pe-hint">填了日定额会自动按「工价 = ${DAILY_WAGE_BASE} 元 ÷ 日定额」算出工价；
+      个别工序不按这个口径定价的，直接改工价那一栏覆盖即可。</div>
     <div class="btn-row" style="padding-left:0;padding-right:0">
       <button class="btn block" onclick="A.peAdd()">＋ 新增工序</button></div>
   </section>`;
@@ -1234,6 +1250,36 @@ function cfPickRow(kind) {
     }).join("")
     : `<span class="row-sub">这个款式还没有选${what}，先去款式管理里给它加上</span>`}</div></div>`;
 }
+// 客户不该让人每张单重打一遍：从已有客户里选，也能当场新建一个存进选项池。
+// 跟款式表单的客户字段用的是同一份 /style-options 数据。
+function cfCustomerPicker() {
+  const cf = state.cf;
+  const all = ((state.styleOptions || {}).customers) || [];
+  const kw = (cf.custKw || "").trim();
+  const cand = all.filter((v) => !kw || v.toLowerCase().includes(kw.toLowerCase()));
+  const exact = all.some((v) => v === kw);
+  return `<div class="field optbox${cf.custOpen ? " open" : ""}"><span>客户</span>
+    <div class="opt-chips">
+      ${cf.customer ? `<span class="chip on">${esc(cf.customer)}<button class="chip-x" type="button"
+          onclick="event.stopPropagation();A.cfSetCustomer('')" aria-label="清除客户">×</button></span>`
+    : `<span class="row-sub">还没有选客户</span>`}
+      <button class="chip add" type="button" onclick="A.cfToggleCust()">＋ 选择</button>
+    </div>
+    ${cf.custOpen ? `<div class="opt-panel">
+      <input class="in opt-search" placeholder="搜索 / 选择客户" value="${esc(cf.custKw || "")}"
+        oninput="A.cfCustSearch(this.value)" autocomplete="off">
+      <div class="opt-list">
+        ${cand.length ? cand.map((v) => `<div class="opt-row${cf.customer === v ? " on" : ""}"
+            onclick="A.cfSetCustomer('${encodeURIComponent(v)}')">
+            <span class="opt-name">${esc(v)}</span></div>`).join("")
+        : `<div class="empty">没有匹配的客户</div>`}
+        ${kw && !exact ? `<div class="opt-row create" onclick="A.cfCustCreate()">＋ 新建「${esc(kw)}」</div>` : ""}
+      </div>
+      <div class="btn-row"><button class="btn ghost mini block" type="button" onclick="A.cfToggleCust()">收起</button></div>
+    </div>` : ""}
+  </div>`;
+}
+
 function cfMatrixHtml() {
   const cf = state.cf;
   if (!cf.colors.length || !cf.sizes.length) return `<div class="empty">先在上面选好颜色和尺码</div>`;
@@ -1279,7 +1325,7 @@ function vCutForm() {
           <input class="in" id="cf-bedNo" type="number" inputmode="numeric" value="${esc(cf.bedNo)}"
             placeholder="第几床" onchange="A.cfSet('bedNo',this.value)"></label>
         ${f("制单号", "docNo", "请输入制单号")}
-        ${f("客户", "customer", "请输入客户")}
+        ${cfCustomerPicker()}
         <label class="field"><span>裁床日期<span class="req">*</span></span>
           ${dateFieldHtml("cf-cutDate", cf.cutDate, "A.cfSet('cutDate',this.value)")}</label>
         <label class="field"><span>发货日期</span>
@@ -1690,6 +1736,16 @@ function vScanlog() {
 }
 
 /* ---------- 管理（员工账号 + 新增员工，仅管理员/主管可见） ---------- */
+// 下拉的选项 = 本系统的四个岗位；如果这个人当前挂的是跟单系统的老岗位，
+// 把它作为一个带来源说明的选项补在最后，否则下拉里选不中、界面会显示原始键。
+function roleOptionsFor(curRole) {
+  const opts = (state.roles || []).map((r) => [r.k, r.label]);
+  if (curRole && !opts.some(([k]) => k === curRole)) {
+    opts.push([curRole, LEGACY_ROLE_LABELS[curRole] || (curRole + "（未知岗位）")]);
+  }
+  return opts;
+}
+
 function vAdmin() {
   if (!isManager()) return `<div class="card"><div class="empty">仅管理员或主管可访问</div></div>`;
   const kw = state.empKw.trim();
@@ -1709,7 +1765,7 @@ function vAdmin() {
       : users.length ? users.map(u => `<tr>
         <td style="white-space:nowrap">${esc(u.name)}${u.id === me().id ? ` <span class="tag">我</span>` : ""}</td>
         <td class="num">${esc(u.phone)}</td>
-        <td>${selectHtml("role-" + u.id, roles.map(r => [r.k, r.label]), u.role, `A.changeRole('${u.id}',this.value)`)}</td>
+        <td>${selectHtml("role-" + u.id, roleOptionsFor(u.role), u.role, `A.changeRole('${u.id}',this.value)`)}</td>
         <td style="white-space:nowrap">
           <button class="act-btn" onclick="A.editUser('${u.id}')">编辑</button>
           <button class="act-btn ghost" style="margin-left:6px" onclick="A.resetPw('${u.id}')">重置密码</button>
@@ -2400,6 +2456,28 @@ const A = {
 
   /* ---------- 裁床编菲 ---------- */
   cfSet(k, v) { state.cf[k] = v; },
+  cfToggleCust() { state.cf.custOpen = !state.cf.custOpen; state.cf.custKw = ""; render(); },
+  cfCustSearch(v) {
+    state.cf.custKw = v; render();
+    const el = document.querySelector(".optbox.open .opt-search");
+    if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
+  },
+  cfSetCustomer(encV) {
+    state.cf.customer = encV ? decodeURIComponent(encV) : "";
+    if (encV) state.cf.custOpen = false;
+    render();
+  },
+  async cfCustCreate() {
+    const value = (state.cf.custKw || "").trim();
+    if (!value) return;
+    try {
+      await api("POST", "/style-options", { type: "customer", value });
+      const o = await api("GET", "/style-options");
+      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      state.cf.customer = value; state.cf.custKw = ""; state.cf.custOpen = false;
+      render(); toast("已新增客户");
+    } catch (e) { toast((e && e.error) || "新增失败"); }
+  },
   cfToggleAxis(kind, encV) {
     const v = decodeURIComponent(encV), cf = state.cf;
     const arr = kind === "color" ? cf.colors : cf.sizes;
@@ -2449,7 +2527,8 @@ const A = {
   async cfSubmit() {
     const cf = state.cf;
     // 输入框用的是 onchange，用户没失焦时 state 还是旧值，提交前从 DOM 兜一次
-    ["bedNo", "docNo", "customer", "orderNo", "bedNote", "ticketNote", "companyName"].forEach(k => {
+    // customer 现在是选择器不是输入框，不能再从 DOM 兜（会读成 undefined 把已选的清掉）
+    ["bedNo", "docNo", "orderNo", "bedNote", "ticketNote", "companyName"].forEach(k => {
       const el = $("cf-" + k); if (el) cf[k] = el.value.trim();
     });
     if (!cf.bedNo) return toast("请填写床次");
@@ -2662,7 +2741,14 @@ const A = {
     const el = $("tpl-name");
     if (el && state.tplEditing) state.tplEditing.name = el.value;
   },
-  peSetQuota(i, v) { state.pe.items[i].dailyQuota = v === "" ? "" : (Number(v) || 0); },
+  peSetQuota(i, v) {
+    const it = state.pe.items[i];
+    const q = v === "" ? "" : (Number(v) || 0);
+    it.dailyQuota = q;
+    // 日定额一填就把工价算出来；手动改工价仍然可以覆盖它（有些工序不按这个口径定价）
+    if (q > 0) it.unitPrice = Math.round((DAILY_WAGE_BASE / q) * 10000) / 10000;
+    render();
+  },
   peSetName(i, v) { state.pe.items[i].name = v; },
   peSetPrice(i, v) { A.syncStyleForm(); A.syncTplName(); state.pe.items[i].unitPrice = Number(v) || 0; render(); },
   peStep(i, d) {

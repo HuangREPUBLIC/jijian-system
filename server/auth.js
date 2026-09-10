@@ -61,7 +61,13 @@ const isAdmin = (u) => !!u && u.role === "admin";
 // 主管角色键：daka 导入的是 r1785125327446(技术主管)/r1785125333976(业务主管)，
 // 同时兼容 jijian 原生的 tech_lead/biz_lead。测试结束想收紧：把 TEST_OPEN_ALL 改成 false，
 // 并把 routes.js 里用 managerRequired/authRequired 放开的路由按需改回 adminRequired 即可。
-const SUPERVISOR_ROLES = new Set(["r1785125327446", "r1785125333976", "tech_lead", "biz_lead"]);
+// 有完全权限的岗位（除 admin 外）。branch_lead=分厂主管 是这个系统自己的岗位；
+// 后面几个是从跟单系统导入员工时带过来的老岗位键，留着是为了不把已有的人踢出权限，
+// 等他们改成新岗位后可以清掉。
+const SUPERVISOR_ROLES = new Set([
+  "branch_lead",
+  "r1785125327446", "r1785125333976", "tech_lead", "biz_lead"
+]);
 const isManager = (u) => isAdmin(u) || (!!u && SUPERVISOR_ROLES.has(u.role));
 
 // 完全权限门槛：员工管理/操作记录/薪资管理这 3 块用它（管理员+主管）。

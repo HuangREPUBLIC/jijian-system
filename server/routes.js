@@ -49,11 +49,19 @@ function changeWhat(labels, body, skipValueKeys) {
 // 职位显示名：跟单系统自己的角色(业务员/下厂员/主管等)存在 settings.roles 里，
 // 车间计件工人是 jijian 自己发明的角色，不在那张表里，这里特殊处理一下。
 // 走 MySQL 后 getSetting 是异步的，遍历用户列表时先把 roles 预加载好，再用这个同步版查表。
+// 从跟单系统导进来的老岗位键：这些人还没改成本系统的岗位，
+// 没有这张表的话「我的」页会直接显示一串 r1785125327446 之类的原始键
+const LEGACY_ROLE_LABELS = {
+  sales: "业务员（跟单系统）", follower: "下厂员（跟单系统）",
+  tech_lead: "技术主管（跟单系统）", biz_lead: "业务主管（跟单系统）",
+  r1785125327446: "技术主管（跟单系统）", r1785125333976: "业务主管（跟单系统）"
+};
 function roleLabelWith(roles, roleKey) {
-  if (roleKey === "admin") return "管理员";
+  if (roleKey === "admin") return "工厂管理员";
   if (roleKey === "worker") return "计件工";
   const r = roles.find((x) => x.k === roleKey);
-  return r ? r.label : roleKey;
+  if (r) return r.label;
+  return LEGACY_ROLE_LABELS[roleKey] || roleKey;
 }
 
 // 给登录 / 我的接口返回的 user 带上岗位中文名（前端"我的"页职位显示用；职位==岗位，同一个东西）。
@@ -191,7 +199,11 @@ router.get("/users", A.authRequired, A.managerRequired, async (req, res) => {
 
 // 可选的职位列表，给"设置岗位"选择器用（不含管理员，避免顺手就把人设成管理员）
 router.get("/roles", A.authRequired, A.managerRequired, async (req, res) => {
-  const roles = [{ k: "worker", label: "计件工" }].concat((await getSetting("roles", [])).map((r) => ({ k: r.k, label: r.label })));
+  // worker 以前不在 settings.roles 里，所以这里硬拼了一个；现在四个岗位都在设置里了，
+  // 再拼就会出现两个「计件工」。改成：设置里没有 worker 才补，保证列表不重复。
+  const saved = (await getSetting("roles", [])).map((r) => ({ k: r.k, label: r.label }));
+  const roles = saved.some((r) => r.k === "worker")
+    ? saved : [{ k: "worker", label: "计件工" }].concat(saved);
   res.json({ roles });
 });
 

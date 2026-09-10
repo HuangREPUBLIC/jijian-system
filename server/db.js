@@ -389,14 +389,20 @@ async function resetAllPasswords() {
 
 // 岗位兜底：仅当还完全没设置过 roles 时写入默认两个岗位（生产环境已由 daka 导入填过，这里通常跳过；
 // 测试环境不导入 daka，就靠这里种下技术主管/业务主管）。
+// 这个系统面向服装厂车间，岗位就这四个。admin/worker 两个键在代码里有特殊含义
+// （admin 是超级权限，worker 是默认新员工岗位），所以沿用这两个键、只改显示名。
+const JJ_ROLES = [
+  { k: "admin", label: "工厂管理员" },
+  { k: "branch_lead", label: "分厂主管" },
+  { k: "worker", label: "计件工" },
+  { k: "temp", label: "临时工" }
+];
+
 async function seedRoles() {
   const existing = await getSetting("roles", null);
   if (existing === null || (Array.isArray(existing) && existing.length === 0)) {
-    await setSetting("roles", [
-      { k: "tech_lead", label: "技术主管" },
-      { k: "biz_lead", label: "业务主管" }
-    ]);
-    console.log("[seed] 已写入默认岗位：技术主管、业务主管");
+    await setSetting("roles", JJ_ROLES);
+    console.log("[seed] 已写入默认岗位：" + JJ_ROLES.map((r) => r.label).join("、"));
   }
 }
 
@@ -511,6 +517,16 @@ async function init() {
   await seedAdmins();
   // 5. 岗位兜底
   await seedRoles();
+  // 5b. 一次性把岗位换成本系统的四个（工厂管理员/分厂主管/计件工/临时工）。
+  // 库里原来那套是从跟单系统导员工时带过来的（业务员/下厂员/技术主管/业务主管），
+  // 对车间计件没有意义。只换"可选岗位列表"，**不动任何人已有的 users.role**——
+  // 谁是什么岗位由管理员在「管理」页自己改，代码不替他们决定。
+  // 判据是列表里有没有 branch_lead：有就说明已经换过了，不重复写。
+  const curRoles = await getSetting("roles", []);
+  if (!Array.isArray(curRoles) || !curRoles.some((r) => r && r.k === "branch_lead")) {
+    await setSetting("roles", JJ_ROLES);
+    console.log("[migrate] 岗位列表已换成：" + JJ_ROLES.map((r) => r.label).join("、"));
+  }
   // 6. 可选：一次性把老账号的随机密码重置成初始密码
   await resetAllPasswords();
   const connDesc = CONF.socketPath ? `socket:${CONF.socketPath}` : `${CONF.host}:${CONF.port}`;
