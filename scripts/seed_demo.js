@@ -51,11 +51,14 @@ async function wipe(codes) {
   }
 }
 
-async function makeStyle(code, name, { hasCutting = true } = {}) {
+async function makeStyle(code, name, opts = {}) {
+  const { hasCutting = true } = opts;
   const id = uid();
+  // 尺码/颜色要写进款式：裁床编菲页的候选就来自这两个字段，不写的话那一页没得选
   await db.prepare(
-    "INSERT INTO jj_styles(id,name,code,customer,has_cutting,deleted,created_at) VALUES(?,?,?,?,?,0,?)")
-    .run(id, name, code, CUSTOMER, hasCutting ? 1 : 0, Date.now());
+    "INSERT INTO jj_styles(id,name,code,customer,size,color,has_cutting,deleted,created_at) VALUES(?,?,?,?,?,?,?,0,?)")
+    .run(id, name, code, CUSTOMER, (opts.sizes || SIZES).join(","), (opts.colors || []).join(","),
+      hasCutting ? 1 : 0, Date.now());
   return id;
 }
 
@@ -125,7 +128,7 @@ async function makeOrder(styleId, opts) {
   await wipe(["FC3390 裤", "FC3390-1", "FA10053"]);
 
   // —— FC3390 裤：截图里的主角，床次1 / 床次2 ——
-  const s1 = await makeStyle("FC3390 裤", "");
+  const s1 = await makeStyle("FC3390 裤", "", { colors: ["223暗蓝", "331浅蓝条"] });
   await makeProcesses(s1, [{ name: "剪线", unitPrice: 0 }, { name: "烫工", unitPrice: 0 }]);
   const colors1 = ["223暗蓝", "331浅蓝条"];
   // 床次2：S/M 用截图里的真实逐扎数字，其余尺码按同样的形状铺开。
@@ -161,7 +164,7 @@ async function makeOrder(styleId, opts) {
   });
 
   // —— FC3390-1：截图「生产进度」那一张，床次4，280 件，L 码两色 ——
-  const s2 = await makeStyle("FC3390-1", "RIGHY LL");
+  const s2 = await makeStyle("FC3390-1", "RIGHY LL", { colors: ["223暗蓝", "460深邃蓝"], sizes: ["L"] });
   await makeProcesses(s2, [{ name: "剪线", unitPrice: 0 }, { name: "烫工", unitPrice: 0 }]);
   await makeOrder(s2, {
     bedNo: 4, docNo: "2901", cutDate: "2026-09-08", shipDate: "2026-09-09",
@@ -170,7 +173,7 @@ async function makeOrder(styleId, opts) {
   });
 
   // —— FA10053：不裁床的款，用来验「是否裁床：否」 ——
-  const s3 = await makeStyle("FA10053", "LINE HL OPEN", { hasCutting: false });
+  const s3 = await makeStyle("FA10053", "LINE HL OPEN", { hasCutting: false, colors: ["66酒红", "23地中海蓝"] });
   await makeProcesses(s3, [{ name: "剪线", unitPrice: 0 }, { name: "烫工", unitPrice: 0 }]);
 
   console.log("[seed] 演示数据就绪");

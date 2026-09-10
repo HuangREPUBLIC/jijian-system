@@ -281,6 +281,7 @@ const DDL = [
     prices MEDIUMTEXT,
     show_price TINYINT NOT NULL DEFAULT 1,
     visible_roles MEDIUMTEXT,
+    daily_quota DOUBLE,
     style_process_id VARCHAR(64),
     created_at BIGINT NOT NULL,
     KEY idx_jjcop_order (order_id, seq)
@@ -480,6 +481,11 @@ async function init() {
   await addCol("jj_scan_records", "bundle_id", "bundle_id VARCHAR(64)");
   await addCol("jj_scan_records", "order_process_id", "order_process_id VARCHAR(64)");
   await addCol("jj_scan_records", "unit_price", "unit_price DOUBLE");
+
+  // 2j. 工序的日定额（一个工人一天做得完多少件）：排产和算效率要用，
+  // 款式工序和裁床单的工序快照都要有，快照才能反映"下单那一刻的定额"
+  await addCol("jj_style_processes", "daily_quota", "daily_quota DOUBLE");
+  await addCol("jj_cut_order_processes", "daily_quota", "daily_quota DOUBLE");
 
   // 2i. 进度聚合按 (扎, 工序) 分组，补索引
   const [scIdx] = await pool.query(

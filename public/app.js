@@ -21,7 +21,8 @@ let state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   me: null,
   users: null, roles: null,
-  processes: null, styles: null, styleOptions: null, styleKw: "",
+  processes: null, styles: null,
+  tplList: null, tplEditing: null,   // 工序模板（整套工序清单） styleOptions: null, styleKw: "",
   // 生产管理页：range 是概览卡的今日/昨日/本月；tab 是"按裁床单看/按款看"；from/to 是明细的日期区间
   co: { range: "today", tab: "sheet", kw: "", from: "", to: "", dateOpen: false, overview: null, list: null, byStyle: null },
   // 裁床编菲表单。colors/sizes 的顺序就是矩阵的行列顺序，也就是扎号编号的遍历顺序，
@@ -35,7 +36,7 @@ let state = {
   home: { today: 0, mgr: null, emp: null },
   // 扫菲打点：ticketInput 是手输/扫出来的扎号或菲票号，bundle/bundleOrder/bundleProcs 是查到的那一扎
   scan: { date: todayStr(), records: null, eff: null,
-    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false },
+    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "" },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
   slog: { date: todayStr(), records: null },
@@ -54,7 +55,6 @@ let showWelcome = false;        // 打开 App 时短暂展示的欢迎界面（l
 let modalState = null;
 let deferredInstall = null;     // 安卓/桌面 Chrome 的原生安装事件
 let notifPanelOpen = false;     // 桌面端顶部铃铛下拉面板是否展开
-let procForm = null;            // 工序模板表单
 let styleForm = null;           // 款式表单
 
 const isMobileDevice = () => /iPhone|iPad|iPod|Android|Mobile|HarmonyOS/i.test(navigator.userAgent || "")
@@ -239,7 +239,15 @@ async function loadView(v) {
     state.scan.records = rec.records || []; state.scan.eff = eff;
     return;
   }
-  if (v === "processes") { state.processes = (await api("GET", "/processes")).processes || []; return; }
+  if (v === "processes") {
+    const [t, roleRes] = await Promise.all([
+      api("GET", "/process-templates"),
+      api("GET", "/roles").catch(() => ({ roles: [] }))   // 普通员工取不到岗位列表就留空，不阻塞页面
+    ]);
+    state.tplList = t.list || [];
+    state.tplRoles = roleRes.roles || [];
+    return;
+  }
   if (v === "styles") {
     const [s, o, p] = await Promise.all([
       api("GET", "/styles"), api("GET", "/style-options").catch(() => ({})), api("GET", "/processes")
@@ -263,11 +271,15 @@ async function loadView(v) {
         styleId: route.id, styleName: st ? (st.code || st.name) : "",
         bedNo: "", docNo: "", customer: (st && st.customer) || "", cutDate: todayStr(), shipDate: "",
         orderNo: "", bedNote: "", ticketNote: "", companyName: COMPANY_NAME,
-        // 款式上已经填过的尺码/颜色直接带过来，省得每张单重选一遍
+        // 候选 = 这个款式已选的颜色/尺码；默认全部带上，省得每张单重选一遍
+        styleColors: String((st && st.color) || "").split(",").map(x => x.trim()).filter(Boolean),
+        styleSizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
         colors: String((st && st.color) || "").split(",").map(x => x.trim()).filter(Boolean),
         sizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
         cells: {}, startNo: 1,
-        customNo: false, customVat: false, rowCopy: true, colCopy: false, multiple: false, sameBundles: false,
+        // multiple 默认开：车间的说法是"件数=每张菲票多少件，扎数=打几张菲票"，
+        // 关掉是"把总件数按扎数平分"，那是少数情况。
+        customNo: false, customVat: false, rowCopy: true, colCopy: false, multiple: true, sameBundles: false,
         bundlesAll: 1, customNos: {}, vatNos: {}
       };
     }
@@ -280,7 +292,7 @@ async function loadView(v) {
     state.cp = {
       orderId: route.id, order: d.order, bundleCount: d.bundles.length,
       from: minNo, to: maxNo, picks: "", usePicks: false,
-      copies: 1, template: "label60x40", rotate: false, perNote: false,
+      copies: 1, template: "label60x40", rotate: false, perNote: false, showPrice: false,
       note: d.order.ticket_note || "", companyName: d.order.company_name || COMPANY_NAME
     };
     return;
@@ -554,10 +566,10 @@ const SUB_VIEWS = { processes: "home", styles: "home", styleprocs: "home", atten
   cutorders: "home", cutform: "styles", cutview: "cutorders", cutprint: "cutorders",
   cutprogress: "cutorders", bundleprogress: "cutprogress", procprogress: "cutprogress" };
 function go(v, id) {
+  if (v !== "processes") { state.tplEditing = null; }
   route = { v, id: id || null };
   lightbox = null; renderLightbox();
   if (v !== "styles") { styleForm = null; photoDraft = {}; }
-  if (v !== "processes") procForm = null;
   render(); window.scrollTo(0, 0);
   // 出错也要重绘一次：loadView 里出错时已经把对应数据清空了，别让页面继续显示上一次的旧内容
   loadView(v).then(render).catch(e => { render(); toast((e && e.error) || "加载失败"); });
@@ -569,7 +581,7 @@ function pageMeta() {
   const T = {
     home: "首页", scan: "打点", mine: "我的", admin: "管理",
     processes: "工序模板", styles: "款式管理", styleprocs: "修改工序", attendance: "考勤录入",
-    efficiency: "效率看板", scanlog: "扫菲记录", payroll: "薪资管理", notifs: "消息通知",
+    efficiency: "效率看板", scanlog: "打点记录", payroll: "薪资管理", notifs: "消息通知",
     cutorders: "生产管理", cutform: "裁床编菲", cutview: "查看裁床单", cutprint: "打印菲票",
     cutprogress: "生产进度", bundleprogress: "生产进度详情", procprogress: "工序进展"
   };
@@ -612,7 +624,7 @@ function sidebarHtml() {
       ["scan", "打点", "scan"], ["processes", "工序模板", "processes"], ["styles", "款式管理", "styles"],
       ["cutorders", "生产管理", "cutting"],
       ...(isManager() ? [["attendance", "考勤录入", "attendance"]] : []), ["efficiency", "效率看板", "efficiency"],
-      ["scanlog", "扫菲记录", "scanlog"]
+      ["scanlog", "打点记录", "scanlog"]
     ]],
     ["系统", [
       ...(isManager() ? [["payroll", "薪资管理", "payroll"], ["admin", "管理", "admin"]] : []),
@@ -674,7 +686,7 @@ function render() {
       `<button class="dbc-link" onclick="go('${c.v}')">${esc(c.label)}</button><span class="dbc-sep">\u203a</span>`).join("")
       }<span class="dbc-current">${esc(meta.title)}</span></nav>` : ""}
     <header class="navbar"><div class="navbar-in">
-      <div class="nav-slot">${meta.left || ""}</div>
+      <div class="nav-slot mobile-only">${meta.left || ""}</div>
       <h1 class="nav-title">${esc(meta.title)}</h1>
       <div class="nav-slot right">${deskBellBtnHtml()}</div>
     </div>${deskNotifOverlayHtml()}</header>
@@ -771,7 +783,7 @@ function vHome() {
         ${tool("cutorders", "生产管理", "cutting")}
         ${isManager() ? tool("attendance", "考勤录入", "attendance") : ""}
         ${tool("efficiency", "效率看板", "efficiency")}
-        ${tool("scanlog", "扫菲记录", "scanlog")}
+        ${tool("scanlog", "打点记录", "scanlog")}
         ${isManager() ? tool("payroll", "薪资管理", "payroll") : ""}
         ${isManager() ? tool("admin", "管理", "admin") : ""}
       </div>
@@ -779,9 +791,13 @@ function vHome() {
 }
 
 /* ---------- 打点 ---------- */
-// 摄像头扫码只有 Chrome/安卓的 BarcodeDetector 支持，iOS Safari 没有。
-// 所以按钮按能力渲染，手输扎号/菲票号永远是可用的兜底路径——车间手机型号杂，不能只留一条路。
-const CAN_SCAN = typeof window !== "undefined" && "BarcodeDetector" in window;
+// 摄像头扫码：原生 BarcodeDetector 只有 Chrome/安卓有，iOS 上 Safari/Chrome/Edge
+// 内核都是 WebKit，一律没有。所以没有原生实现时退回 jsQR（本地打包，PWA 离线也能用），
+// 两条路都基于 getUserMedia，iPhone 上照样扫得动。
+// 唯一的硬前提是安全上下文：必须 https（或 localhost），否则浏览器不给摄像头。
+const HAS_NATIVE_SCAN = typeof window !== "undefined" && "BarcodeDetector" in window;
+const CAN_SCAN = typeof navigator !== "undefined" &&
+  !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 
 function scanBundleHtml() {
   const sc = state.scan, b = sc.bundle;
@@ -793,9 +809,14 @@ function scanBundleHtml() {
           inputmode="numeric" onchange="A.setTicketInput(this.value)">
         <button class="act-btn" onclick="A.lookupTicket()">查找</button>
         ${CAN_SCAN ? `<button class="act-btn" onclick="A.startCamera()">${sc.camOn ? "关闭摄像头" : "摄像头扫码"}</button>` : ""}</div>
-      ${sc.camOn ? `<div class="field"><video id="scan-cam" class="scan-cam" playsinline muted></video>
-        <div class="row-sub">把菲票上的二维码对准取景框</div></div>` : ""}
-      ${!CAN_SCAN ? `<div class="field"><div class="row-sub">这个浏览器不支持摄像头扫码，请手动输入扎号或菲票号</div></div>` : ""}
+      ${sc.camOn ? `<div class="field"><div class="scan-viewport">
+          <video id="scan-cam" class="scan-cam" playsinline muted autoplay></video>
+          <div class="scan-frame" aria-hidden="true"></div></div>
+        <div class="row-sub">${esc(sc.camMsg || "把菲票上的二维码对准取景框")}</div></div>` : ""}
+      ${!CAN_SCAN ? `<div class="field"><div class="row-sub">${
+        location.protocol === "https:" || location.hostname === "localhost"
+          ? "这个浏览器不给用摄像头，请手动输入扎号或菲票号"
+          : "摄像头需要 https 才能用（当前是 http），请手动输入扎号或菲票号"}</div></div>` : ""}
     </div>
 
     ${b ? `<div class="card style-card" style="margin-top:10px">
@@ -873,37 +894,58 @@ function vScan() {
 }
 
 /* ---------- 工序模板 ---------- */
+/* ---------- 工序模板 ----------
+ * 这里管的是「整套工序清单」模板（jj_process_templates），不是单条工序。
+ * 跟款式表单里的「生产工序」、款式列表的「修改工序」用的是同一个编辑器组件，
+ * 所以在任何一处点「保存模板」，都会出现在这一页；在这一页改完，别处「选择模板」也能套到。
+ * 老的单条工序定额表（jj_processes）只剩「自由打点」在用，不在这里露出。
+ */
 function vProcesses() {
-  const list = state.processes;
-  const totalPrice = num((list || []).reduce((s, p) => s + Number(p.unit_price || 0), 0));
-  const f = procForm;
+  const list = state.tplList;
+  const editing = state.tplEditing;   // 正在编辑/新建的模板：{ id, name } 或 null
+
+  if (editing) {
+    return `<section class="group"><div class="card">
+        <label class="field"><span>模板名称<span class="req">*</span></span>
+          <input class="in" id="tpl-name" value="${esc(editing.name || "")}"
+            placeholder="例如：长袖衬衫标准工序"></label>
+      </div></section>
+      ${procEditorHtml()}
+      <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+        <button class="btn block" onclick="A.tplSave()">${editing.id ? "保存修改" : "创建模板"}</button>
+        <button class="btn ghost block" onclick="A.tplCancel()">取消</button></div></section>`;
+  }
+
+  const totalProcs = (list || []).reduce((n, t) => n + t.items.length, 0);
   return `<section class="group"><div class="sum-bar">
-      <div class="sum-item"><div class="sum-num num">${(list || []).length}</div><div class="sum-label">工序数量</div></div>
-      <div class="sum-item"><div class="sum-num num">${totalPrice}</div><div class="sum-label">单价合计（元）</div></div>
+      <div class="sum-item"><div class="sum-num num">${(list || []).length}</div><div class="sum-label">模板数量</div></div>
+      <div class="sum-item"><div class="sum-num num">${totalProcs}</div><div class="sum-label">工序总数</div></div>
     </div></section>
 
-  <section class="group"><div class="card">
-    ${list === null ? `<div class="empty">加载中…</div>` : list.length ? list.map((p, i) => `
-      <div class="row-item tap" onclick="A.editProcess('${p.id}')">
-        <div class="row-main"><div class="row-label">${i + 1}. ${esc(p.name)}</div>
-          <div class="row-sub">标准定额 ${num(p.std_qty)}${esc(p.unit || "")} · 小时定额 ${num(p.hour_quota)}${
-    p.unit_price ? ` · 单价 ${num(p.unit_price)}元` : ""}</div></div>
-        <div class="row-acts"><button class="act-btn danger" onclick="event.stopPropagation();A.delProcess('${p.id}')">删除</button></div>
-      </div>`).join("") : `<div class="empty">还没有工序模板</div>`}
-  </div></section>
+  ${list === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+    : list.length ? list.map((t) => {
+      const total = t.items.reduce((n, it) => n + (Number(it.unitPrice) || 0), 0);
+      return `<section class="group"><div class="card tpl-card">
+        <button class="tpl-head w-row" onclick="A.tplEdit('${t.id}')">
+          <div class="row-main">
+            <div class="row-label">${esc(t.name)}</div>
+            <div class="row-sub">${t.items.length} 道工序 · 工价合计 <span class="num">${num(total)}</span> 元</div>
+            <div class="tpl-procs">${t.items.slice(0, 6).map((it) =>
+              `<span class="tag">${esc(it.name)}</span>`).join("")}${
+              t.items.length > 6 ? `<span class="tag">…</span>` : ""}</div>
+          </div><span class="chev">›</span></button>
+        <div class="sc-acts">
+          <button onclick="A.tplEdit('${t.id}')">编辑</button>
+          <button onclick="A.tplDelete('${t.id}')">删除</button>
+        </div>
+      </div></section>`;
+    }).join("")
+    : `<section class="group"><div class="card"><div class="empty">
+        还没有工序模板。把常用的一整套工序存成模板，建款式时「选择模板」一键套用。
+      </div></div></section>`}
 
-  <section class="group">
-    <div class="btn-row" style="padding-left:0;padding-right:0">
-      <button class="btn ${f ? "ghost" : ""} block" onclick="A.toggleProcessForm()">${f ? "取消" : "新增工序模板"}</button></div>
-    ${f ? `<div class="card">
-      <label class="field"><span>工序名称<span class="req">*</span></span><input class="in" id="pf-name" value="${esc(f.name)}"></label>
-      <label class="field"><span>单位（如：个）</span><input class="in" id="pf-unit" value="${esc(f.unit)}"></label>
-      <label class="field"><span>标准定额<span class="req">*</span></span><input class="in" id="pf-std" type="number" inputmode="decimal" step="any" value="${esc(f.stdQty)}"></label>
-      <label class="field"><span>小时定额<span class="req">*</span></span><input class="in" id="pf-hour" type="number" inputmode="decimal" step="any" value="${esc(f.hourQuota)}"></label>
-      <label class="field"><span>计件单价（元/件，选填，薪资管理要用）</span><input class="in" id="pf-price" type="number" inputmode="decimal" step="any" value="${esc(f.unitPrice)}"></label>
-      <div class="btn-row"><button class="btn block" onclick="A.saveProcess()">保存</button></div>
-    </div>` : ""}
-  </section>`;
+  <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
+    <button class="btn block" onclick="A.tplNew()">新建工序模板</button></div></section>`;
 }
 
 /* ---------- 款式管理 ---------- */
@@ -1045,7 +1087,7 @@ function procEditorHtml() {
     </div>
 
     <div class="card"><div class="tbl-wrap"><table class="tbl pe-tbl">
-      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th>
+      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th><th>日定额</th>
         ${cols.map((c) => `<th>${esc(mode === "role" ? peRoleLabel(c) : c)}</th>`).join("")}
         <th>显示价格</th><th>可见岗位</th></tr>
       ${pe.items.length ? pe.items.map((it, i) => `<tr>
@@ -1053,9 +1095,13 @@ function procEditorHtml() {
         <td class="num">${i + 1}</td>
         <td><input class="in" value="${esc(it.name)}" placeholder="工序名称" onchange="A.peSetName(${i},this.value)"></td>
         <td><div class="stepper">
-          <button onclick="A.peStep(${i},-1)" aria-label="减少">−</button>
-          <input class="in" type="number" inputmode="decimal" step="any" value="${esc(it.unitPrice)}" onchange="A.peSetPrice(${i},this.value)">
-          <button onclick="A.peStep(${i},1)" aria-label="增加">＋</button></div></td>
+          <button type="button" onclick="A.peStep(${i},-1)" aria-label="减少工价">−</button>
+          <input class="in num" type="number" inputmode="decimal" step="any" value="${esc(it.unitPrice)}"
+            onchange="A.peSetPrice(${i},this.value)" aria-label="工价">
+          <button type="button" onclick="A.peStep(${i},1)" aria-label="增加工价">＋</button></div></td>
+        <td><input class="in num pe-quota" type="number" inputmode="numeric" step="any"
+          value="${esc(it.dailyQuota === undefined || it.dailyQuota === null ? "" : it.dailyQuota)}"
+          placeholder="件/天" onchange="A.peSetQuota(${i},this.value)" aria-label="日定额"></td>
         ${cols.map((c) => `<td><input class="in pe-sub" type="number" inputmode="decimal" step="any"
           value="${esc((it.prices && it.prices[c] !== undefined && it.prices[c] !== null) ? it.prices[c] : "")}"
           placeholder="${num(it.unitPrice)}"
@@ -1064,7 +1110,7 @@ function procEditorHtml() {
           aria-label="显示价格" role="switch" aria-checked="${!!it.showPrice}"><i></i></button></td>
         <td><button class="act-btn" onclick="A.pePickRoles(${i})">${
           it.visibleRoles && it.visibleRoles.length ? esc(it.visibleRoles.map(peRoleLabel).join("、")) : "所有岗位可见"}</button></td>
-      </tr>`).join("") : `<tr><td colspan="${5 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
+      </tr>`).join("") : `<tr><td colspan="${6 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
     </table></div></div>
 
     <div class="btn-row" style="padding-left:0;padding-right:0">
@@ -1157,7 +1203,7 @@ function vEfficiency() {
 const CF_SWITCHES = [
   ["customNo", "自定义扎号"], ["customVat", "自定义缸号"],
   ["rowCopy", "行复制"], ["colCopy", "列复制"],
-  ["multiple", "倍数模式"], ["sameBundles", "每件扎数相同"]
+  ["multiple", "件数=每扎件数"], ["sameBundles", "每格扎数相同"]
 ];
 const cfKey = (c, z) => c + "|" + z;
 function cfCell(c, z) { return state.cf.cells[cfKey(c, z)] || { input: "", bundles: "" }; }
@@ -1174,15 +1220,19 @@ function cfBundleCount() {
 // 颜色/尺码的选择：候选来自全局选项池，点一下加进矩阵、再点一下移出
 function cfPickRow(kind) {
   const cf = state.cf;
-  const all = ((state.styleOptions || {})[kind === "color" ? "colors" : "sizes"]) || [];
+  // 候选只来自「这个款式已经选好的」颜色/尺码，不是全局选项池——
+  // 全局池里有别的款用的颜色，摆在这里会让人误以为这一款也能裁那个色。
+  const all = kind === "color" ? cf.styleColors : cf.styleSizes;
   const cur = kind === "color" ? cf.colors : cf.sizes;
   const label = kind === "color" ? "添加颜色" : "添加尺码";
+  const what = kind === "color" ? "颜色" : "尺码";
   return `<div class="field"><span>${label}</span>
     <div class="chips">${all.length ? all.map(v => {
       const on = cur.includes(v);
       return `<button type="button" class="chip ${on ? "on" : ""}"
         onclick="A.cfToggleAxis('${kind}','${encodeURIComponent(v)}')">${esc(v)}${on ? "" : " ＋"}</button>`;
-    }).join("") : `<span class="row-sub">选项池是空的，先去款式表单里新增${kind === "color" ? "颜色" : "尺码"}</span>`}</div></div>`;
+    }).join("")
+    : `<span class="row-sub">这个款式还没有选${what}，先去款式管理里给它加上</span>`}</div></div>`;
 }
 function cfMatrixHtml() {
   const cf = state.cf;
@@ -1194,10 +1244,10 @@ function cfMatrixHtml() {
     ${cf.colors.map(c => `<tr>
       <th class="mx-head">${esc(c)}</th>
       ${cf.sizes.map(z => `<td><div class="mx-cell">
-        <input class="in" type="number" inputmode="numeric" placeholder="${cf.multiple ? "每扎件数" : "件数"}"
+        <input class="in num" type="number" inputmode="numeric" placeholder="${cf.multiple ? "每扎件数" : "该格总件数"}"
           value="${esc(cfCell(c, z).input)}"
           onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','input',this.value)">
-        <input class="in" type="number" inputmode="numeric" placeholder="扎数"
+        <input class="in num" type="number" inputmode="numeric" placeholder="菲票张数"
           value="${esc(cfCell(c, z).bundles)}" ${cf.sameBundles ? "disabled" : ""}
           onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','bundles',this.value)">
       </div></td>`).join("")}
@@ -1205,7 +1255,10 @@ function cfMatrixHtml() {
     <tr><th class="mx-head">合计</th>${cf.sizes.map(z => `<td class="num">${num(sizeTotal(z))}</td>`).join("")}
       <td class="num">${num(grand)}</td></tr>
   </table></div>
-  <div class="mx-sum">总扎数：<b class="num">${num(cfBundleCount())}</b>　总数：<b class="num">${num(grand)}</b></div>`;
+  <div class="mx-sum">总扎数：<b class="num">${num(cfBundleCount())}</b>　总件数：<b class="num">${num(grand)}</b></div>
+  <div class="mx-hint">${cf.multiple
+    ? "上格填每张菲票多少件，下格填打几张。例如 S 码填「20 / 2」＝打出 2 张各 20 件的菲票。"
+    : "上格填这一格总共多少件，下格填打几张，系统按张数平分（除不尽的余数补到最后一张）。"}</div>`;
 }
 function vCutForm() {
   const cf = state.cf;
@@ -1332,7 +1385,11 @@ function vCutView() {
     <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
       <button class="btn block" onclick="go('cutprogress','${o.id}')">查看生产进度</button>
       ${isManager() ? `<button class="btn ghost block" onclick="go('cutprint','${o.id}')">打印菲票</button>` : ""}
-    </div></section>`;
+    </div>
+    ${isManager() ? `<div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn ghost block" onclick="A.editCutOrderFrom('${o.id}')">修改裁床单</button>
+      <button class="btn ghost danger block" onclick="A.delCutOrderFrom('${o.id}')">删除这张裁床单</button>
+    </div>` : ""}</section>`;
 }
 
 
@@ -1384,6 +1441,10 @@ function vCutPrint() {
       <label class="field"><span>公司名称</span>
         <input class="in" value="${esc(cp.companyName)}" onchange="A.cpSet('companyName',this.value)"></label>
 
+      <div class="field"><label class="chkline">
+        <input type="checkbox" ${cp.showPrice ? "checked" : ""} onchange="A.cpToggle('showPrice')">
+        <span>打印工价</span></label>
+        <div class="row-sub">默认不印。开启后只印那些在工序里勾了「显示价格」的工序。</div></div>
       <div class="field"><label class="chkline">
         <input type="checkbox" ${cp.rotate ? "checked" : ""} onchange="A.cpToggle('rotate')">
         <span>打印方向旋转 180°</span></label></div>
@@ -1877,7 +1938,7 @@ const A = {
     state.att.userId = ""; state.att.records = null;
     state.eff.list = null; state.slog.records = null;
     state.pay.list = state.pay.mine = null; state.pay.editing = "";
-    styleForm = procForm = null; photoDraft = {};
+    styleForm = null; photoDraft = {};
     localStorage.removeItem(TOKEN_KEY);
     route = { v: "home", id: null }; render();
   },
@@ -1954,32 +2015,6 @@ const A = {
   delScan(id) { run(() => api("DELETE", "/scan/" + id), "已删除"); },
 
   /* ---- 工序模板 ---- */
-  toggleProcessForm() {
-    procForm = procForm ? null : { id: "", name: "", unit: "", stdQty: "", hourQuota: "", unitPrice: "" };
-    render();
-  },
-  editProcess(id) {
-    const p = (state.processes || []).find(x => x.id === id); if (!p) return;
-    procForm = {
-      id: p.id, name: p.name, unit: p.unit || "", stdQty: String(p.std_qty),
-      hourQuota: String(p.hour_quota), unitPrice: p.unit_price === null || p.unit_price === undefined ? "" : String(p.unit_price)
-    };
-    render(); window.scrollTo(0, document.body.scrollHeight);
-  },
-  async saveProcess() {
-    const name = val("pf-name"), stdQty = val("pf-std"), hourQuota = val("pf-hour"), price = val("pf-price");
-    if (!name || !stdQty || !hourQuota) return toast("请填写完整");
-    const body = { name, unit: val("pf-unit"), stdQty: Number(stdQty), hourQuota: Number(hourQuota) };
-    if (price !== "") body.unitPrice = Number(price);
-    const id = procForm.id;
-    await run(() => api(id ? "PATCH" : "POST", id ? "/processes/" + id : "/processes", body).then(() => { procForm = null; }), "已保存");
-  },
-  delProcess(id) {
-    modal({
-      title: "删除工序", body: "确定删除这个工序模板吗？", danger: true, okText: "删除",
-      onOk: () => run(() => api("DELETE", "/processes/" + id), "已删除")
-    });
-  },
 
   /* ---- 款式 ---- */
   newStyle() {
@@ -2010,8 +2045,8 @@ const A = {
         sizes: String(s.size || "").split(",").filter(Boolean),
         roles: roleRes.roles || [],
         items: r.list.map((x) => ({
-          name: x.name, unitPrice: x.unit_price, prices: x.prices || {},
-          showPrice: x.show_price !== false, visibleRoles: x.visible_roles || []
+          name: x.name, unitPrice: x.unit_price, dailyQuota: x.daily_quota,
+          prices: x.prices || {}, showPrice: x.show_price !== false, visibleRoles: x.visible_roles || []
         }))
       };
       render();
@@ -2075,6 +2110,57 @@ const A = {
     const k = regGallery([el.getAttribute("src")]);
     el.setAttribute("data-gallery", k); el.setAttribute("data-i", "0");
     A.lightboxFromEl(el);
+  },
+
+  /* ---------- 工序模板（整套工序清单） ---------- */
+  // 编辑器组件读的是 state.pe，所以进出编辑态时要把模板内容搬进/搬出 state.pe
+  tplNew() {
+    state.tplEditing = { id: null, name: "" };
+    state.pe = { styleId: null, mode: "default", sizes: [], roles: state.tplRoles || [], items: [] };
+    render();
+  },
+  tplEdit(id) {
+    const t = (state.tplList || []).find((x) => x.id === id);
+    if (!t) return;
+    state.tplEditing = { id: t.id, name: t.name };
+    state.pe = {
+      styleId: null,
+      mode: (t.items[0] && t.items[0].priceMode) || "default",
+      // 分码单价要有尺码才能编辑；模板不绑定款式，就把已存过价的尺码列出来
+      sizes: [...new Set(t.items.flatMap((it) => Object.keys(it.prices || {})))],
+      roles: state.tplRoles || [],
+      items: t.items.map((it) => ({
+        name: it.name || "", unitPrice: Number(it.unitPrice) || 0,
+        dailyQuota: it.dailyQuota === undefined ? "" : it.dailyQuota,
+        prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
+      }))
+    };
+    render();
+  },
+  tplCancel() { state.tplEditing = null; state.pe = null; render(); },
+  async tplSave() {
+    A.syncTplName();
+    const name = String((state.tplEditing && state.tplEditing.name) || "").trim();
+    if (!name) return toast("请填写模板名称");
+    const items = A.peCollect();
+    if (!items.length) return toast("至少要有一道工序");
+    const cur = state.tplEditing;
+    try {
+      // 后端没有"改模板"的接口，编辑就是删旧建新——模板是一坨值，没有需要保留的引用关系
+      if (cur.id) await api("DELETE", "/process-templates/" + cur.id);
+      await api("POST", "/process-templates", { name, items });
+      state.tplEditing = null; state.pe = null;
+      await loadView("processes"); render();
+      toast(cur.id ? "模板已保存" : "模板已创建");
+    } catch (e) { toast((e && e.error) || "保存失败"); }
+  },
+  tplDelete(id) {
+    const t = (state.tplList || []).find((x) => x.id === id);
+    modal({
+      title: "删除工序模板", danger: true, okText: "删除",
+      body: t ? `确定删除「${t.name}」吗？已经套用过这个模板的款式不受影响。` : "确定删除吗？",
+      onOk: () => { run(() => api("DELETE", "/process-templates/" + id), "已删除"); return true; }
+    });
   },
 
   /* ---------- 系统推送订阅 ---------- */
@@ -2146,36 +2232,78 @@ const A = {
   async startCamera() {
     const sc = state.scan;
     if (sc.camOn) { A.stopCamera(); return; }
-    sc.camOn = true; render();
+    sc.camOn = true; sc.camMsg = "正在打开摄像头…"; render();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      // 后置摄像头；给个较高的分辨率，菲票上的码印得小，太糊了解不出来
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
       A._camStream = stream;
       const video = $("scan-cam");
       if (!video) { A.stopCamera(); return; }
-      video.srcObject = stream; await video.play();
-      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+      video.srcObject = stream;
+      video.setAttribute("playsinline", "");   // iOS 上不加这个会强制全屏播放
+      await video.play();
+      sc.camMsg = "把菲票上的二维码对准取景框";
+      render();
+
+      const detector = HAS_NATIVE_SCAN ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
+      // jsQR 有 251K，按需加载：没有原生实现、真的要扫的时候才拉，不扫码的人不用为它买单
+      if (!detector && !window.jsQR) {
+        sc.camMsg = "正在加载扫码组件…"; render();
+        await new Promise((resolve, reject) => {
+          const el = document.createElement("script");
+          el.src = "/jsQR.js"; el.onload = resolve; el.onerror = reject;
+          document.head.appendChild(el);
+        }).catch(() => { toast("扫码组件加载失败，请手动输入扎号"); });
+      }
+      const jsQR = window.jsQR;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+      const hit = (raw) => {
+        if (!/^JJ:\d+$/i.test(raw || "")) return false;
+        state.scan.ticketInput = raw.replace(/^JJ:/i, "");
+        A.stopCamera();
+        A.lookupTicket();
+        return true;
+      };
+
       const tick = async () => {
         if (!state.scan.camOn || !video.srcObject) return;
         try {
-          const codes = await det.detect(video);
-          const hit = codes.find(c => /^JJ:\d+$/i.test(c.rawValue || ""));
-          if (hit) {
-            state.scan.ticketInput = hit.rawValue.replace(/^JJ:/i, "");
-            A.stopCamera();
-            return A.lookupTicket();
+          if (detector) {
+            const codes = await detector.detect(video);
+            for (const c of codes) if (hit(c.rawValue)) return;
+          } else if (jsQR && video.videoWidth) {
+            // jsQR 吃的是像素数组，要先把这一帧画到 canvas 上。
+            // 缩到最长边 640：全分辨率解一帧在手机上要几百毫秒，缩了之后既跟手又够清晰。
+            const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+            canvas.width = Math.round(video.videoWidth * scale);
+            canvas.height = Math.round(video.videoHeight * scale);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+            if (code && hit(code.data)) return;
           }
-        } catch (e) { /* 单帧识别失败无所谓，下一帧继续 */ }
-        requestAnimationFrame(tick);
+        } catch (e) { /* 单帧解不出来无所谓，下一帧继续 */ }
+        A._camTimer = setTimeout(tick, detector ? 120 : 200);
       };
       tick();
     } catch (e) {
       A.stopCamera();
-      toast("打不开摄像头，请检查权限，或直接手动输入扎号");
+      // 权限被拒和没有摄像头是两回事，分开提示，不然用户不知道该去哪儿改
+      const name = e && e.name;
+      if (name === "NotAllowedError") toast("摄像头权限被拒绝，请在浏览器设置里允许，或手动输入扎号");
+      else if (name === "NotFoundError") toast("这台设备没有可用的摄像头，请手动输入扎号");
+      else toast("打不开摄像头，请手动输入扎号");
     }
   },
   stopCamera() {
+    clearTimeout(A._camTimer); A._camTimer = null;
     if (A._camStream) { A._camStream.getTracks().forEach(t => t.stop()); A._camStream = null; }
-    state.scan.camOn = false; render();
+    state.scan.camOn = false; state.scan.camMsg = ""; render();
   },
 
   /* ---------- 打印菲票 ---------- */
@@ -2218,7 +2346,7 @@ const A = {
         ${o.customer ? `<span>${esc(o.customer)}</span>` : ""}
       </div>
       <div class="tk-procs">${processes.map(p =>
-        `<span>${esc(p.name)}${p.show_price ? ` ${num(p.unit_price)}` : ""}</span>`).join("")}</div>
+        `<span>${esc(p.name)}${cp.showPrice && p.show_price ? ` ${num(p.unit_price)}` : ""}</span>`).join("")}</div>
       ${(cp.perNote ? b.note : cp.note) ? `<div class="tk-note">${esc(cp.perNote ? (b.note || "") : cp.note)}</div>` : ""}
     </div>`;
 
@@ -2348,6 +2476,36 @@ const A = {
       state.cf = null;                 // 用完就丢，下次进来是干净的表单
       go("cutview", r.order.id);
     } catch (e) { toast((e && e.error) || "生成失败"); }
+  },
+
+  // 从「查看裁床单」进来时 state.co.list 可能是空的（没经过生产管理页），
+  // 所以这两个包一层：先保证列表里有这张单的数据，再复用原来的弹窗
+  async ensureCoOrder(id) {
+    if ((state.co.list || []).some((o) => o.id === id)) return;
+    try {
+      const r = await api("GET", "/cut-orders?limit=200");
+      state.co.list = r.list || [];
+    } catch (e) { /* 拉不到就退回用详情页已有的数据 */ }
+    if (!(state.co.list || []).some((o) => o.id === id) && state.cv) {
+      state.co.list = [...(state.co.list || []), state.cv.order];
+    }
+  },
+  async editCutOrderFrom(id) { await A.ensureCoOrder(id); A.editCutOrder(id); },
+  async delCutOrderFrom(id) {
+    await A.ensureCoOrder(id);
+    const o = (state.co.list || []).find((x) => x.id === id);
+    modal({
+      title: "删除裁床单", danger: true, okText: "删除",
+      body: o ? `确定删除「${o.style_code || o.style_name} · 床次${o.bed_no}」吗？这张单的 ${num(o.total_bundles)} 张菲票和进度都会一起看不到。` : "确定删除吗？",
+      onOk: () => {
+        // 删完这张单，详情页已经没有东西可看了，回生产管理列表
+        (async () => {
+          try { await api("DELETE", "/cut-orders/" + id); toast("已删除"); go("cutorders"); }
+          catch (e) { toast((e && e.error) || "删除失败"); }
+        })();
+        return true;
+      }
+    });
   },
 
   /* ---------- 生产管理 ---------- */
@@ -2481,12 +2639,12 @@ const A = {
   // 下面这一串 peXxx 都会触发 render() 整页重绘，而款号/款式名称的输入框没有 onchange，
   // 不先把 DOM 里的值同步回 state，用户刚打的字会被重绘出来的旧值悄悄覆盖。
   peSetMode(mode) {
-    A.syncStyleForm();
+    A.syncStyleForm(); A.syncTplName();
     if (mode !== state.pe.mode && peHasMultiPrices()) return toast("请先删除多单价再改变单价模式");
     state.pe.mode = mode; render();
   },
-  peAdd() { A.syncStyleForm(); A.peSyncNames(); state.pe.items.push({ name: "", unitPrice: 0, prices: {}, showPrice: true, visibleRoles: [] }); render(); },
-  peDel(i) { A.syncStyleForm(); A.peSyncNames(); state.pe.items.splice(i, 1); render(); },
+  peAdd() { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items.push({ name: "", unitPrice: 0, dailyQuota: "", prices: {}, showPrice: true, visibleRoles: [] }); render(); },
+  peDel(i) { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items.splice(i, 1); render(); },
   // 工序名和工价用的也是 onchange，用户没失焦时 state 还是旧值；重绘前先从 DOM 兜一次。
   // 跟 peCollect() 是同一件事，抽出来给那些"会触发重绘"的 handler 复用。
   peSyncNames() {
@@ -2499,10 +2657,16 @@ const A = {
       if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
     });
   },
+  // 模板名称框没有 onchange，重绘会把它清回旧值；所有触发 render() 的编辑动作先调这个
+  syncTplName() {
+    const el = $("tpl-name");
+    if (el && state.tplEditing) state.tplEditing.name = el.value;
+  },
+  peSetQuota(i, v) { state.pe.items[i].dailyQuota = v === "" ? "" : (Number(v) || 0); },
   peSetName(i, v) { state.pe.items[i].name = v; },
-  peSetPrice(i, v) { A.syncStyleForm(); state.pe.items[i].unitPrice = Number(v) || 0; render(); },
+  peSetPrice(i, v) { A.syncStyleForm(); A.syncTplName(); state.pe.items[i].unitPrice = Number(v) || 0; render(); },
   peStep(i, d) {
-    A.syncStyleForm(); A.peSyncNames();
+    A.syncStyleForm(); A.syncTplName(); A.peSyncNames();
     const it = state.pe.items[i];
     it.unitPrice = Math.max(0, Math.round(((Number(it.unitPrice) || 0) + d * 0.1) * 10000) / 10000);
     render();
@@ -2513,7 +2677,7 @@ const A = {
     if (v === "") delete it.prices[k]; else it.prices[k] = Number(v) || 0;
   },
   peSetRolePrice(i, encRole, v) { A.peSetSizePrice(i, encRole, v); },
-  peToggleShow(i) { A.syncStyleForm(); A.peSyncNames(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
+  peToggleShow(i) { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
   pePickRoles(i) {
     const it = state.pe.items[i];
     const chosen = new Set(it.visibleRoles || []);
@@ -2554,8 +2718,9 @@ const A = {
     const t = (state.pe.templates || []).find((x) => x.id === id);
     if (!t) return;
     state.pe.items = t.items.map((it) => ({
-      name: it.name || "", unitPrice: Number(it.unitPrice) || 0, prices: it.prices || {},
-      showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
+      name: it.name || "", unitPrice: Number(it.unitPrice) || 0,
+      dailyQuota: it.dailyQuota === undefined ? "" : it.dailyQuota,
+      prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
     }));
     A.modalCancel(); render(); toast("已套用模板");
   },
@@ -2572,11 +2737,14 @@ const A = {
       if (nameEl) it.name = nameEl.value;
       const priceEl = tr.querySelector(".stepper input");
       if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
+      const quotaEl = tr.querySelector(".pe-quota");
+      if (quotaEl) it.dailyQuota = quotaEl.value === "" ? "" : (Number(quotaEl.value) || 0);
     });
     return state.pe.items.filter((it) => String(it.name || "").trim()).map((it) => ({
       name: String(it.name).trim(),
       priceMode: state.pe.mode,
       unitPrice: Number(it.unitPrice) || 0,
+      dailyQuota: it.dailyQuota === "" || it.dailyQuota === undefined ? "" : Number(it.dailyQuota),
       prices: state.pe.mode === "default" ? null : (it.prices || {}),
       showPrice: it.showPrice !== false,
       visibleRoles: it.visibleRoles || []

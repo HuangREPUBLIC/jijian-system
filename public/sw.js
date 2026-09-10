@@ -1,7 +1,7 @@
 // 版本号变了就会丢弃旧缓存。改动前端后 bump 这个数字。
-const CACHE = "jijian-v3";
+const CACHE = "jijian-v4";
 const SHELL = ["/", "/index.html", "/app.js", "/styles.css",
-  "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
+  "/jsQR.js", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

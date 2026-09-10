@@ -732,6 +732,9 @@ async function styleProcessList(styleId) {
       prices: jsonParseSafe(r.prices, {}),
       show_price: r.show_price !== 0,
       visible_roles: jsonParseSafe(r.visible_roles, []),
+      // 日定额：一个工人一天做得完多少件，排产/算效率用。没设过就回空串，
+      // 前端原样放回输入框，读-改-写不会把"没设"变成 0
+      daily_quota: (r.daily_quota === null || r.daily_quota === undefined) ? "" : Number(r.daily_quota),
       process_unit: r.process_unit || null,
       // 列表/合计用的"这道工序的默认价"：跟 unit_price 同值，字段保留给已依赖它的调用方
       effectivePrice: effective
@@ -765,13 +768,14 @@ router.put("/styles/:id/processes", A.authRequired, async (req, res) => {
     await conn.query("DELETE FROM jj_style_processes WHERE style_id = ?", [style.id]);
     if (items.length) {
       await conn.query(
-        `INSERT INTO jj_style_processes(id,style_id,process_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,created_at)
+        `INSERT INTO jj_style_processes(id,style_id,process_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,created_at)
          VALUES ?`,
         [items.map((it, i) => [uid(), style.id, it.processId || null, i + 1,
           String(it.name).trim(), it.priceMode || "default", Number(it.unitPrice) || 0,
           it.prices ? JSON.stringify(it.prices) : null,
           it.showPrice === false ? 0 : 1,
           Array.isArray(it.visibleRoles) && it.visibleRoles.length ? JSON.stringify(it.visibleRoles) : null,
+          it.dailyQuota === "" || it.dailyQuota === undefined || it.dailyQuota === null ? null : Number(it.dailyQuota),
           now])]);
     }
     await conn.commit();
@@ -877,11 +881,11 @@ router.post("/styles/:id/processes/sync", A.authRequired, A.managerRequired, asy
       await conn.query("DELETE FROM jj_cut_order_processes WHERE order_id = ?", [o.id]);
       if (sps.length) {
         await conn.query(
-          `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
+          `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
            VALUES ?`,
           [sps.map((sp, i) => [uid(), o.id, sp.seq || i + 1, sp.name || "工序" + (i + 1),
             sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
-            sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.id, now])]);
+            sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.daily_quota, sp.id, now])]);
       }
     }
     await conn.commit();

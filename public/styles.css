@@ -721,3 +721,74 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .proc-scan{border-top:.5px solid var(--line)}
 .proc-scan .row-acts{gap:6px;align-items:center}
 .proc-scan .in.tiny{width:64px}
+
+/* ==========================================================================
+   UI 打磨（对齐 make-interfaces-feel-better 的检查项）
+   ========================================================================== */
+
+/* 图片：加一圈中性描边，浅色底上白衣服、深色底上黑衣服才不会糊进卡片背景。
+   用黑/白 alpha 而不是品牌色——描边是为了界定边缘，不是装饰。 */
+img{outline:1px solid rgba(0,0,0,.1);outline-offset:-1px}
+@media (prefers-color-scheme: dark){ img{outline-color:rgba(255,255,255,.1)} }
+/* 灯箱里的大图不要这圈线，那是内容本身 */
+.lightbox .lb-img{outline:0}
+
+/* 标题避免出现"最后一行只剩一个字"，说明性小字避免孤字 */
+.sc-title,.group-title,.row-label,.m-title{text-wrap:balance}
+.row-sub,.mx-hint,.empty,.dr-panel .field>span{text-wrap:pretty}
+
+/* 会变的数字统一等宽，跳动时列不会左右晃 */
+.sc-v,.cc-pct,.rn-v,.tk-rows,.mx-sum b{font-variant-numeric:tabular-nums}
+.mx-tbl td.num,.tbl td.num,.pe-tbl input.num{font-variant-numeric:tabular-nums}
+
+/* 步进器按钮视觉上只有 28px，但手指要按得到：用伪元素把可点区域撑到 40px。
+   伪元素只扩命中区、不占布局，所以不会把表格撑开。 */
+.stepper button{position:relative;flex:none}
+.stepper button::after{content:"";position:absolute;left:50%;top:50%;
+  width:40px;height:40px;transform:translate(-50%,-50%)}
+/* 开关同理：视觉 44×26，命中区补到 44×40 */
+.sw{position:relative}
+.sw::after{content:"";position:absolute;left:0;top:50%;width:100%;height:40px;transform:translateY(-50%)}
+
+/* 同心圆角：卡片内嵌的输入框/按钮，半径 = 外层半径 − 内边距，看起来才是"套在里面"而不是"贴上去" */
+.mx-cell .in{border-radius:calc(var(--radius-sm) - 2px)}
+.opt-panel{border-radius:calc(var(--radius) - 4px)}
+
+/* 明确列出过渡的属性，不用 transition:all —— all 会把 layout 属性也带进动画，掉帧 */
+.sc-acts button,.act-btn,.chip,.stepper button,.sw,.dr-btn,.tpl-head{
+  transition-property:transform,background-color,border-color,box-shadow,color;
+  transition-duration:150ms;transition-timing-function:var(--ease-out)}
+
+/* ---------- 工序编辑器：日定额列 ---------- */
+.pe-quota{min-width:72px;text-align:center}
+.pe-tbl th,.pe-tbl td{vertical-align:middle}
+
+/* ---------- 工序模板卡片 ---------- */
+.tpl-card{padding:0;overflow:hidden}
+.tpl-head{display:flex;align-items:flex-start;gap:10px;width:100%;padding:14px 12px 10px;
+  border:0;background:transparent;text-align:left;cursor:pointer}
+.tpl-head:active{background:var(--card-2)}
+.tpl-head .chev{flex:none;align-self:center}
+/* 工序名胶囊：只预览前几个，超了用省略号，不要让一个模板占半屏 */
+.tpl-procs{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.tpl-procs .tag{font-size:var(--fs-cap)}
+.tpl-card .sc-acts{padding:0 12px 12px}
+
+/* ---------- 扫码取景框 ---------- */
+.scan-viewport{position:relative;border-radius:var(--radius-sm);overflow:hidden;background:#000}
+.scan-cam{width:100%;max-height:280px;display:block;object-fit:cover;outline:0}
+/* 取景角标：告诉用户把码放哪儿，比一句文字有用 */
+.scan-frame{position:absolute;left:50%;top:50%;width:62%;aspect-ratio:1;
+  transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.85);
+  border-radius:var(--radius-sm);box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
+
+/* ---------- 裁床编菲：录入提示 ---------- */
+.mx-hint{color:var(--ink-2);font-size:var(--fs-cap);line-height:1.5;padding:0 2px 4px}
+
+/* 危险的整行按钮（删除裁床单） */
+.btn.ghost.danger{color:var(--bad-ink)}
+.btn.ghost.danger:active{background:var(--bad-soft)}
+
+/* 桌面端已经有面包屑（首页 › 生产管理 › 生产进度），navbar 里的「‹ 返回」是重复的一层导航，
+   两个一起出现会让人以为有两级可退。手机没有面包屑，那里必须保留返回按钮。 */
+@media (min-width:768px){ .nav-slot.mobile-only{visibility:hidden} }

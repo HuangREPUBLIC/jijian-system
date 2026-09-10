@@ -161,11 +161,11 @@ router.post("/cut-orders", A.authRequired, A.managerRequired, async (req, res) =
       "SELECT * FROM jj_style_processes WHERE style_id = ? ORDER BY seq ASC", [style.id]);
     if (spRows.length) {
       await conn.query(
-        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
+        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
          VALUES ?`,
         [spRows.map((sp, i) => [uid(), orderId, sp.seq || i + 1, sp.name || "工序" + (i + 1),
           sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
-          sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.id, now])]);
+          sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.daily_quota, sp.id, now])]);
     }
     await conn.commit();
   } catch (e) {
@@ -290,10 +290,10 @@ router.post("/cut-orders/:id/copy", A.authRequired, A.managerRequired, async (re
     }
     if (srcProcs.length) {
       await conn.query(
-        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,style_process_id,created_at)
+        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
          VALUES ?`,
         [srcProcs.map((p) => [uid(), newId, p.seq, p.name, p.price_mode, p.unit_price,
-          p.prices, p.show_price, p.visible_roles, p.style_process_id, now])]);
+          p.prices, p.show_price, p.visible_roles, p.daily_quota, p.style_process_id, now])]);
     }
     await conn.commit();
   } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
