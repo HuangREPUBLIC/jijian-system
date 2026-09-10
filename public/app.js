@@ -37,7 +37,7 @@ let state = {
   home: { today: 0, mgr: null, emp: null },
   // 扫菲打点：ticketInput 是手输/扫出来的扎号或菲票号，bundle/bundleOrder/bundleProcs 是查到的那一扎
   scan: { date: todayStr(), records: null, eff: null,
-    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "", diag: "" },
+    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "" },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
   slog: { date: todayStr(), records: null },
@@ -834,8 +834,6 @@ function scanBundleHtml() {
         location.protocol === "https:" || location.hostname === "localhost"
           ? "这个浏览器不给用摄像头，请手动输入扎号或菲票号"
           : "摄像头需要 https 才能用（当前是 http），请手动输入扎号或菲票号"}</div></div>` : ""}
-      ${sc.diag ? `<div class="field"><div class="scan-diag">${esc(sc.diag)}</div></div>` : ""}
-      <div class="field"><button class="act-btn" onclick="A.scanDiag()">扫码用不了？点这里自检</button></div>
     </div>
 
     ${b ? `<div class="card style-card" style="margin-top:10px">
@@ -2317,41 +2315,6 @@ const A = {
       await loadView("scan"); render();
     } catch (e) { toast((e && e.error) || "打点失败"); }
   },
-  // 扫码失败的原因通常不在代码里（不是 https、权限没给、内核不支持），
-  // 与其来回猜，不如把这几项当场列出来
-  async scanDiag() {
-    const L = [];
-    L.push("地址：" + location.protocol + "//" + location.host);
-    const secure = location.protocol === "https:" || location.hostname === "localhost";
-    L.push("安全上下文（摄像头的前提）：" + (secure ? "是" : "否 ← 必须用 https 打开"));
-    L.push("能否取摄像头接口：" + (CAN_SCAN ? "能" : "不能 ← 浏览器没提供 getUserMedia"));
-    L.push("原生二维码识别：" + (HAS_NATIVE_SCAN ? "有" : "无（会用 jsQR 兜底，正常）"));
-    if (!HAS_NATIVE_SCAN) {
-      if (window.jsQR) L.push("jsQR：已加载");
-      else {
-        try {
-          const r = await fetch("/jsQR.js", { method: "HEAD" });
-          L.push("jsQR 文件：" + (r.ok ? "服务器上有（点扫码时才加载）" : "取不到，HTTP " + r.status));
-        } catch (e) { L.push("jsQR 文件：取不到（" + (e && e.message) + "）"); }
-      }
-    }
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
-        const st = await navigator.permissions.query({ name: "camera" });
-        L.push("摄像头权限：" + st.state);
-      } catch (e) { L.push("摄像头权限：查不到（这个浏览器不支持查询，不影响使用）"); }
-    }
-    // 真的申请一次，最能说明问题
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-      stream.getTracks().forEach((t) => t.stop());
-      L.push("试开摄像头：成功 ✓");
-    } catch (e) {
-      L.push("试开摄像头：失败 → " + (e && e.name) + "：" + (e && e.message));
-    }
-    state.scan.diag = L.join("\n");
-    render();
-  },
 
   async startCamera() {
     const sc = state.scan;
@@ -2360,7 +2323,7 @@ const A = {
     // render() 用 innerHTML 重建整个 #app，刚绑好 srcObject 的 <video> 会被换成一个空元素，
     // 流还在跑（iOS 状态栏有红点）但画面全黑，jsQR 读到的 videoWidth 也是 0。
     // 所以开机之后所有提示都直接改 DOM，不走 render。
-    sc.camOn = true; sc.camMsg = "正在打开摄像头…"; sc.diag = ""; render();
+    sc.camOn = true; sc.camMsg = "正在打开摄像头…"; render();
 
     const setMsg = (t) => {
       state.scan.camMsg = t;
