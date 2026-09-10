@@ -796,3 +796,13 @@ img{outline:1px solid rgba(0,0,0,.1);outline-offset:-1px}
 /* 工序编辑器：表头小注与公式说明 */
 .th-note{display:block;font-weight:400;font-size:var(--fs-micro);color:var(--ink-3);margin-top:1px}
 .pe-hint{color:var(--ink-2);font-size:var(--fs-cap);line-height:1.5;padding:8px 2px 2px;text-wrap:pretty}
+
+/* 打印：排版完成后的提示卡 */
+.print-ready{border:1px solid var(--ok);background:var(--ok-soft)}
+.print-ready .row-label{color:var(--ok-ink)}
+
+/* 扫码自检输出：等宽 + 保留换行，方便照着念给我听 */
+.scan-diag{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:var(--fs-cap);line-height:1.6;color:var(--ink-2);
+  background:var(--card-2);border-radius:var(--radius-sm);padding:10px 12px;
+  user-select:text;-webkit-user-select:text}

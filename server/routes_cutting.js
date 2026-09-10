@@ -28,6 +28,7 @@ for (const m of ["get", "post", "put", "patch", "delete"]) {
       : h));
 }
 
+const esc0 = (v) => (v === null || v === undefined ? "" : String(v));
 const num0 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const jsonParse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
 
@@ -465,6 +466,44 @@ router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res)
         tag: "cut-" + bundle.order_id });
   }
   res.json({ bundle: fresh });
+});
+
+/* ---------------- 删除单独一扎（菲票） ----------------
+ * 一张裁床单里排错了一扎、或者某个颜色/尺码根本不做了，需要能单独删掉那一扎，
+ * 而不是把整张单删了重排。
+ * 已经有人打过点的扎不让删——那等于把工人做过的活和对应的工资一起抹掉；
+ * 真要删得先把那些打点记录处理掉，这个决定不该由一个删除按钮替人做。
+ */
+router.delete("/bundles/:id", A.authRequired, A.managerRequired, async (req, res) => {
+  const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
+  if (!bundle) return res.status(404).json({ error: "菲票不存在" });
+
+  const done = await db.prepare(
+    "SELECT COALESCE(SUM(qty),0) AS q FROM jj_scan_records WHERE bundle_id=?").get(bundle.id);
+  if (Number(done.q) > 0) {
+    return res.status(400).json({
+      error: `扎号 ${bundle.bundle_no} 已经有 ${num0(done.q)} 件打过点了，不能删。先把这些打点记录删掉再试。`
+    });
+  }
+
+  const order = await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(bundle.order_id);
+  await db.prepare("DELETE FROM jj_cut_bundles WHERE id=?").run(bundle.id);
+
+  // 单头的总扎数/总件数是冗余列，删了扎要跟着重算，否则列表页的数跟明细对不上
+  const agg = await db.prepare(
+    "SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM jj_cut_bundles WHERE order_id=?").get(bundle.order_id);
+  await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
+    .run(agg.n, agg.q, bundle.order_id);
+
+  if (order) {
+    const label = `${await styleLabelOf(order.style_id)} · 床次${order.bed_no}`;
+    await logOp(req.user.id, `删除菲票：${label} 扎号${bundle.bundle_no}（${num0(bundle.qty)}件）`);
+    await notifyManagers(`${req.user.name} 删了 ${label} 的一张菲票`, "/cutorders", req.user.id,
+      { actorName: req.user.name, targetLabel: label,
+        what: `删除扎号${bundle.bundle_no}（${esc0(bundle.color)} ${esc0(bundle.size)} ${num0(bundle.qty)}件）`,
+        tag: "cut-" + bundle.order_id });
+  }
+  res.json({ ok: true, total_bundles: agg.n, total_qty: agg.q });
 });
 
 /* ---------------- 生产管理概览 ---------------- */

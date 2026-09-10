@@ -824,6 +824,26 @@ router.delete("/style-processes/:id", A.authRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------------- 日工资基数 ----------------
+ * 工价按"一个工人一天挣多少"倒推：工价 = 日工资基数 ÷ 日定额。
+ * 行情会变（涨工资、换季），所以做成可改的设置，不写死在代码里。
+ * 读：任何登录用户（工序编辑器要用它算价）；写：管理员/主管。
+ */
+const DAILY_WAGE_KEY = "jj_daily_wage";
+router.get("/settings/daily-wage", A.authRequired, async (req, res) => {
+  res.json({ value: Number(await getSetting(DAILY_WAGE_KEY, 100)) || 100 });
+});
+router.post("/settings/daily-wage", A.authRequired, A.managerRequired, async (req, res) => {
+  const v = Number(req.body && req.body.value);
+  if (!(v > 0)) return res.status(400).json({ error: "日工资基数要大于 0" });
+  const old = Number(await getSetting(DAILY_WAGE_KEY, 100)) || 100;
+  await setSetting(DAILY_WAGE_KEY, v);
+  await logOp(req.user.id, `日工资基数：${old} → ${v}`);
+  await notifyManagers(`${req.user.name} 把日工资基数改成了 ${v} 元`, "/processes", req.user.id,
+    { actorName: req.user.name, targetLabel: "日工资基数", what: `从 ${old} 元改成 ${v} 元` });
+  res.json({ value: v });
+});
+
 /* ---------------- 工序模板（整套工序清单，跟 jj_processes 的单条定额模板是两回事） ---------------- */
 router.get("/process-templates", A.authRequired, async (req, res) => {
   const rows = await db.prepare(

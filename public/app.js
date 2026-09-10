@@ -22,6 +22,7 @@ let state = {
   me: null,
   users: null, roles: null,
   processes: null, styles: null,
+  dailyWage: 100,
   tplList: null, tplEditing: null,   // 工序模板（整套工序清单） styleOptions: null, styleKw: "",
   // 生产管理页：range 是概览卡的今日/昨日/本月；tab 是"按裁床单看/按款看"；from/to 是明细的日期区间
   co: { range: "today", tab: "sheet", kw: "", from: "", to: "", dateOpen: false, overview: null, list: null, byStyle: null },
@@ -36,7 +37,7 @@ let state = {
   home: { today: 0, mgr: null, emp: null },
   // 扫菲打点：ticketInput 是手输/扫出来的扎号或菲票号，bundle/bundleOrder/bundleProcs 是查到的那一扎
   scan: { date: todayStr(), records: null, eff: null,
-    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "" },
+    ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "", diag: "" },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
   slog: { date: todayStr(), records: null },
@@ -249,18 +250,22 @@ async function loadView(v) {
     return;
   }
   if (v === "processes") {
-    const [t, roleRes] = await Promise.all([
+    const [t, roleRes, w] = await Promise.all([
       api("GET", "/process-templates"),
-      api("GET", "/roles").catch(() => ({ roles: [] }))   // 普通员工取不到岗位列表就留空，不阻塞页面
+      api("GET", "/roles").catch(() => ({ roles: [] })),  // 普通员工取不到岗位列表就留空，不阻塞页面
+      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
     ]);
     state.tplList = t.list || [];
+    state.dailyWage = w.value || 100;
     state.tplRoles = roleRes.roles || [];
     return;
   }
   if (v === "styles") {
-    const [s, o, p] = await Promise.all([
-      api("GET", "/styles"), api("GET", "/style-options").catch(() => ({})), api("GET", "/processes")
+    const [s, o, p, w] = await Promise.all([
+      api("GET", "/styles"), api("GET", "/style-options").catch(() => ({})), api("GET", "/processes"),
+      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
     ]);
+    state.dailyWage = w.value || 100;
     state.styles = s.styles || []; state.processes = p.processes || [];
     state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
     return;
@@ -339,10 +344,12 @@ async function loadView(v) {
     return;
   }
   if (v === "styleprocs") {
-    const [r, roleRes] = await Promise.all([
+    const [r, roleRes, w] = await Promise.all([
       api("GET", `/styles/${route.id}/processes`),
-      api("GET", "/roles").catch(() => ({ roles: [] }))  // 普通员工没有管理权限，取不到岗位列表就留空，不阻塞页面
+      api("GET", "/roles").catch(() => ({ roles: [] })),  // 普通员工没有管理权限，取不到岗位列表就留空，不阻塞页面
+      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
     ]);
+    state.dailyWage = w.value || 100;
     const style = (state.styles || []).find((s) => s.id === route.id) || {};
     state.pe = {
       styleId: route.id,
@@ -827,6 +834,8 @@ function scanBundleHtml() {
         location.protocol === "https:" || location.hostname === "localhost"
           ? "这个浏览器不给用摄像头，请手动输入扎号或菲票号"
           : "摄像头需要 https 才能用（当前是 http），请手动输入扎号或菲票号"}</div></div>` : ""}
+      ${sc.diag ? `<div class="field"><div class="scan-diag">${esc(sc.diag)}</div></div>` : ""}
+      <div class="field"><button class="act-btn" onclick="A.scanDiag()">扫码用不了？点这里自检</button></div>
     </div>
 
     ${b ? `<div class="card style-card" style="margin-top:10px">
@@ -1063,8 +1072,8 @@ function optPickerHtml(type) {
  * 是条死路）。现在工序名直接打字就能加，工序模板降级成可选的快捷来源。 */
 // 工价按"一个工人一天挣多少"倒推：工价 = 日工资基数 ÷ 日定额。
 // 例：日定额 909 件 → 工价 100/909 ≈ 0.11 元/件。
-// 这个基数要随行情调整时，改这一个数字即可（车间涨工资就往上调）。
-const DAILY_WAGE_BASE = 100;
+// 基数存在后端设置里（管理员/主管可改），这里只是本地缓存，默认 100。
+const dailyWage = () => Number(state.dailyWage) || 100;
 const PRICE_MODES = [["default", "默认单价"], ["size", "分码单价"], ["role", "分岗位单价"]];
 function peTotal() {
   return (state.pe.items || []).reduce((s, it) => s + (Number(it.unitPrice) || 0), 0);
@@ -1087,6 +1096,15 @@ function procEditorHtml() {
       <div class="sum-item"><div class="sum-num num">${num(peTotal())}</div><div class="sum-label">默认工价合计</div></div>
       <div class="sum-item"><div class="sum-num num">${pe.items.length}</div><div class="sum-label">工序数量合计</div></div>
     </div></section>
+
+  <section class="group"><div class="card">
+    <div class="field row"><span>日工资基数</span>
+      <input class="in tiny num" id="pe-wage" type="number" inputmode="decimal" step="any"
+        value="${esc(dailyWage())}" ${isManager() ? "" : "disabled"} onchange="A.saveDailyWage(this.value)">
+      <span>元/天</span>
+      ${isManager() ? "" : `<span class="row-sub">只有管理员和主管能改</span>`}</div>
+    <div class="row-sub" style="padding:0 0 6px">工价 = 日工资基数 ÷ 日定额。改这个数会影响之后所有按日定额自动算出来的工价，已经填好的工价不动。</div>
+  </div></section>
 
   <section class="group">
     <div class="btn-row" style="padding-left:0;padding-right:0;justify-content:flex-end">
@@ -1127,7 +1145,7 @@ function procEditorHtml() {
       </tr>`).join("") : `<tr><td colspan="${6 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
     </table></div></div>
 
-    <div class="pe-hint">填了日定额会自动按「工价 = ${DAILY_WAGE_BASE} 元 ÷ 日定额」算出工价；
+    <div class="pe-hint">填了日定额会自动按「工价 = ${dailyWage()} 元 ÷ 日定额」算出工价；
       个别工序不按这个口径定价的，直接改工价那一栏覆盖即可。</div>
     <div class="btn-row" style="padding-left:0;padding-right:0">
       <button class="btn block" onclick="A.peAdd()">＋ 新增工序</button></div>
@@ -1499,8 +1517,20 @@ function vCutPrint() {
         <span>逐个备注打印（用每一扎自己的备注）</span></label></div>
     </div></section>
 
-    <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
-      <button class="btn block" onclick="A.doPrint()">打印</button></div></section>`;
+    <section class="group">
+      ${cp.ready ? `<div class="card print-ready">
+          <div class="row-item"><div class="row-main">
+            <div class="row-label">已排版 ${cp.ready.count} 张菲票 × ${cp.ready.copies} 份</div>
+            <div class="row-sub">点下面的按钮调起系统打印对话框，在那里选打印机和纸张</div>
+          </div></div>
+        </div>
+        <div class="btn-row" style="padding-left:0;padding-right:0">
+          <button class="btn block" id="do-print-btn" onclick="A.firePrint()">开始打印</button>
+          <button class="btn ghost block" onclick="A.cpReset()">重新排版</button>
+        </div>`
+      : `<div class="btn-row" style="padding-left:0;padding-right:0">
+          <button class="btn block" onclick="A.doPrint()">排版并打印</button></div>`}
+    </section>`;
 }
 
 /* ---------- 生产进度（按扎） ----------
@@ -1564,7 +1594,8 @@ function vCutProgress() {
               <span class="cc-pct">${procs.filter(p => (b.perProcess || {})[p.id] >= b.qty).length}/${procs.length} 道</span></div>
           </div><span class="chev">›</span></button>
         ${isManager() ? `<div class="qty-edit-row">
-          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
+          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button>
+          <button class="act-btn danger" onclick="A.delBundle('${b.id}',${b.bundle_no},${b.qty})">删除这一扎</button></div>` : ""}
       </div>`).join("") : `<div class="card"><div class="empty">${kw ? "没有匹配的扎号" : "这张单还没有菲票"}</div></div>`}
     </section>`;
 }
@@ -1595,7 +1626,8 @@ function vBundleProgress() {
       <div class="group-title">每道工序进展</div>
       <div class="card">
         ${isManager() ? `<div class="qty-edit-row">
-          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button></div>` : ""}
+          <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button>
+          <button class="act-btn danger" onclick="A.delBundle('${b.id}',${b.bundle_no},${b.qty},'${o.id}')">删除这一扎</button></div>` : ""}
         ${procs.map(p => `<div class="row-item">
           <div class="row-main"><div class="row-label">${esc(p.name)}</div>
             <div class="pbar" style="margin-top:6px"><i style="width:${b.qty > 0 ? Math.round(p.done / b.qty * 100) : 0}%"></i></div></div>
@@ -2285,6 +2317,42 @@ const A = {
       await loadView("scan"); render();
     } catch (e) { toast((e && e.error) || "打点失败"); }
   },
+  // 扫码失败的原因通常不在代码里（不是 https、权限没给、内核不支持），
+  // 与其来回猜，不如把这几项当场列出来
+  async scanDiag() {
+    const L = [];
+    L.push("地址：" + location.protocol + "//" + location.host);
+    const secure = location.protocol === "https:" || location.hostname === "localhost";
+    L.push("安全上下文（摄像头的前提）：" + (secure ? "是" : "否 ← 必须用 https 打开"));
+    L.push("能否取摄像头接口：" + (CAN_SCAN ? "能" : "不能 ← 浏览器没提供 getUserMedia"));
+    L.push("原生二维码识别：" + (HAS_NATIVE_SCAN ? "有" : "无（会用 jsQR 兜底，正常）"));
+    if (!HAS_NATIVE_SCAN) {
+      if (window.jsQR) L.push("jsQR：已加载");
+      else {
+        try {
+          const r = await fetch("/jsQR.js", { method: "HEAD" });
+          L.push("jsQR 文件：" + (r.ok ? "服务器上有（点扫码时才加载）" : "取不到，HTTP " + r.status));
+        } catch (e) { L.push("jsQR 文件：取不到（" + (e && e.message) + "）"); }
+      }
+    }
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const st = await navigator.permissions.query({ name: "camera" });
+        L.push("摄像头权限：" + st.state);
+      } catch (e) { L.push("摄像头权限：查不到（这个浏览器不支持查询，不影响使用）"); }
+    }
+    // 真的申请一次，最能说明问题
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+      stream.getTracks().forEach((t) => t.stop());
+      L.push("试开摄像头：成功 ✓");
+    } catch (e) {
+      L.push("试开摄像头：失败 → " + (e && e.name) + "：" + (e && e.message));
+    }
+    state.scan.diag = L.join("\n");
+    render();
+  },
+
   async startCamera() {
     const sc = state.scan;
     if (sc.camOn) { A.stopCamera(); return; }
@@ -2366,10 +2434,16 @@ const A = {
   cpSet(k, v) {
     state.cp[k] = (k === "from" || k === "to" || k === "copies") ? Math.max(1, Number(v) || 1) : v;
     if (k === "copies") state.cp.copies = Math.min(10, state.cp.copies);
+    // 改了任何设置，上一次排好的内容就作废，必须重新排——否则会印出跟界面对不上的东西
+    state.cp.ready = null;
     render();
   },
-  cpToggle(k) { state.cp[k] = !state.cp[k]; render(); },
+  cpToggle(k) { state.cp[k] = !state.cp[k]; state.cp.ready = null; render(); },
+  // 必须是同步函数、直接在 onclick 里调 print()，中间不能有 await——
+  // 一旦跨过 await，浏览器就不再认为这是用户手势触发的，又会被当成自动打印拦掉
+  firePrint() { window.print(); },
   cpStep(d) { A.cpSet("copies", (Number(state.cp.copies) || 1) + d); },
+  cpReset() { state.cp.ready = null; $("print-root").innerHTML = ""; render(); },
 
   async doPrint() {
     const cp = state.cp;
@@ -2423,12 +2497,13 @@ const A = {
     root.className = "tpl-" + cp.template;
     root.innerHTML = html.join("");
     toast(`已排版 ${bundles.length} 张菲票 × ${copies} 份`);
-    // 等浏览器完成排版再调打印，否则部分浏览器印出来是空白。
-    // rAF 在后台标签页里不触发，所以再挂一个 setTimeout 兜底，两者谁先到算谁（只打一次）。
-    let printed = false;
-    const fire = () => { if (printed) return; printed = true; window.print(); };
-    requestAnimationFrame(() => requestAnimationFrame(fire));
-    setTimeout(fire, 300);
+    // 排版好就停在这里，不自动调 print()：Safari（尤其 iOS）会把"不是用户手势直接触发的
+    // print()"判定成自动打印并拦下来，弹一个"已阻止此网站进行自动打印"。
+    // 改成露出一个按钮，用户点它时在手势的调用栈里直接调 print()，不会被任何浏览器拦。
+    state.cp.ready = { count: bundles.length, copies };
+    render();
+    // 滚到按钮那儿，免得用户不知道还要再点一下
+    setTimeout(() => { const el = $("do-print-btn"); if (el) el.scrollIntoView({ block: "center", behavior: "smooth" }); }, 80);
   },
 
   /* ---------- 生产进度 ---------- */
@@ -2440,6 +2515,27 @@ const A = {
       const el = $("pg-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
     }, 250);
   },
+  // 删掉裁床单里单独的一扎：排错了一扎、或某个颜色尺码不做了，不用整张单重排。
+  // 已经打过点的扎后端会拒（那等于把工人做过的活连工资一起抹掉）。
+  delBundle(id, bundleNo, qty, backToOrderId) {
+    modal({
+      title: "删除这一扎", danger: true, okText: "删除",
+      body: `确定删掉扎号 ${bundleNo}（${num(qty)} 件）吗？这张菲票作废，裁床单的总扎数和总件数会跟着减少。`,
+      onOk: () => {
+        (async () => {
+          try {
+            await api("DELETE", "/bundles/" + id);
+            toast("已删除");
+            // 详情页删完就没东西可看了，退回该单的进度页
+            if (backToOrderId) go("cutprogress", backToOrderId);
+            else { await loadView(route.v); render(); }
+          } catch (e) { toast((e && e.error) || "删除失败"); }
+        })();
+        return true;
+      }
+    });
+  },
+
   // 改的是"这一扎裁了多少件"（分母），不碰打点记录（分子）。
   // 改到比已完成数还小会造出"做了12件却只裁了3件"的鬼数据，后端会拦，这里把它的提示原样弹出来。
   editBundleQty(id, curQty) {
@@ -2741,12 +2837,21 @@ const A = {
     const el = $("tpl-name");
     if (el && state.tplEditing) state.tplEditing.name = el.value;
   },
+  async saveDailyWage(v) {
+    const val = Number(v);
+    if (!(val > 0)) { toast("日工资基数要大于 0"); render(); return; }
+    A.syncStyleForm(); A.syncTplName(); A.peSyncNames();
+    try {
+      await api("POST", "/settings/daily-wage", { value: val });
+      state.dailyWage = val; render(); toast("已保存，之后按日定额算工价用这个数");
+    } catch (e) { toast((e && e.error) || "保存失败"); render(); }
+  },
   peSetQuota(i, v) {
     const it = state.pe.items[i];
     const q = v === "" ? "" : (Number(v) || 0);
     it.dailyQuota = q;
     // 日定额一填就把工价算出来；手动改工价仍然可以覆盖它（有些工序不按这个口径定价）
-    if (q > 0) it.unitPrice = Math.round((DAILY_WAGE_BASE / q) * 10000) / 10000;
+    if (q > 0) it.unitPrice = Math.round((dailyWage() / q) * 10000) / 10000;
     render();
   },
   peSetName(i, v) { state.pe.items[i].name = v; },
