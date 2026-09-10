@@ -829,7 +829,7 @@ function scanBundleHtml() {
       ${sc.camOn ? `<div class="field"><div class="scan-viewport">
           <video id="scan-cam" class="scan-cam" playsinline muted autoplay></video>
           <div class="scan-frame" aria-hidden="true"></div></div>
-        <div class="row-sub">${esc(sc.camMsg || "把菲票上的二维码对准取景框")}</div></div>` : ""}
+        <div class="row-sub scan-hint">${esc(sc.camMsg || "把菲票上的二维码对准取景框")}</div></div>` : ""}
       ${!CAN_SCAN ? `<div class="field"><div class="row-sub">${
         location.protocol === "https:" || location.hostname === "localhost"
           ? "这个浏览器不给用摄像头，请手动输入扎号或菲票号"
@@ -2356,26 +2356,42 @@ const A = {
   async startCamera() {
     const sc = state.scan;
     if (sc.camOn) { A.stopCamera(); return; }
-    sc.camOn = true; sc.camMsg = "正在打开摄像头…"; render();
+    // 先把取景区渲染出来，之后拿到视频流就不能再 render() 了 ——
+    // render() 用 innerHTML 重建整个 #app，刚绑好 srcObject 的 <video> 会被换成一个空元素，
+    // 流还在跑（iOS 状态栏有红点）但画面全黑，jsQR 读到的 videoWidth 也是 0。
+    // 所以开机之后所有提示都直接改 DOM，不走 render。
+    sc.camOn = true; sc.camMsg = "正在打开摄像头…"; sc.diag = ""; render();
+
+    const setMsg = (t) => {
+      state.scan.camMsg = t;
+      const el = document.querySelector(".scan-hint");
+      if (el) el.textContent = t;
+    };
+    // 每次用之前重新拿一次 video 元素并确认流还接着：万一别处触发了重绘，这里能自愈
+    const attach = (stream) => {
+      const v = $("scan-cam");
+      if (!v) return null;
+      if (v.srcObject !== stream) {
+        v.srcObject = stream;
+        v.setAttribute("playsinline", "");   // iOS 不加这个会强制全屏播放
+        v.muted = true;
+        const pr = v.play();
+        if (pr && pr.catch) pr.catch(() => {});
+      }
+      return v;
+    };
+
     try {
-      // 后置摄像头；给个较高的分辨率，菲票上的码印得小，太糊了解不出来
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
       A._camStream = stream;
-      const video = $("scan-cam");
-      if (!video) { A.stopCamera(); return; }
-      video.srcObject = stream;
-      video.setAttribute("playsinline", "");   // iOS 上不加这个会强制全屏播放
-      await video.play();
-      sc.camMsg = "把菲票上的二维码对准取景框";
-      render();
+      if (!attach(stream)) { A.stopCamera(); return; }
 
       const detector = HAS_NATIVE_SCAN ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
-      // jsQR 有 251K，按需加载：没有原生实现、真的要扫的时候才拉，不扫码的人不用为它买单
       if (!detector && !window.jsQR) {
-        sc.camMsg = "正在加载扫码组件…"; render();
+        setMsg("正在加载扫码组件…");
         await new Promise((resolve, reject) => {
           const el = document.createElement("script");
           el.src = "/jsQR.js"; el.onload = resolve; el.onerror = reject;
@@ -2383,9 +2399,10 @@ const A = {
         }).catch(() => { toast("扫码组件加载失败，请手动输入扎号"); });
       }
       const jsQR = window.jsQR;
+      setMsg("把菲票上的二维码对准取景框");
+
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
       const hit = (raw) => {
         if (!/^JJ:\d+$/i.test(raw || "")) return false;
         state.scan.ticketInput = raw.replace(/^JJ:/i, "");
@@ -2394,34 +2411,45 @@ const A = {
         return true;
       };
 
+      let waited = 0;
       const tick = async () => {
-        if (!state.scan.camOn || !video.srcObject) return;
+        if (!state.scan.camOn) return;
+        const video = attach(stream);
+        if (!video) { A.stopCamera(); return; }
+        // 刚打开时 videoWidth 还是 0，要等第一帧解码出来
+        if (!video.videoWidth) {
+          waited += 150;
+          if (waited === 3000) setMsg("摄像头没出画面，试试关掉再打开，或直接手动输入扎号");
+          A._camTimer = setTimeout(tick, 150);
+          return;
+        }
         try {
           if (detector) {
             const codes = await detector.detect(video);
             for (const c of codes) if (hit(c.rawValue)) return;
-          } else if (jsQR && video.videoWidth) {
-            // jsQR 吃的是像素数组，要先把这一帧画到 canvas 上。
-            // 缩到最长边 640：全分辨率解一帧在手机上要几百毫秒，缩了之后既跟手又够清晰。
+          } else if (jsQR) {
+            // jsQR 吃像素数组，先把这一帧画到 canvas。缩到最长边 640：
+            // 全分辨率解一帧在手机上要几百毫秒，缩了既跟手又够清晰。
             const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
             canvas.width = Math.round(video.videoWidth * scale);
             canvas.height = Math.round(video.videoHeight * scale);
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+            const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
             if (code && hit(code.data)) return;
           }
         } catch (e) { /* 单帧解不出来无所谓，下一帧继续 */ }
-        A._camTimer = setTimeout(tick, detector ? 120 : 200);
+        A._camTimer = setTimeout(tick, detector ? 120 : 180);
       };
       tick();
     } catch (e) {
       A.stopCamera();
-      // 权限被拒和没有摄像头是两回事，分开提示，不然用户不知道该去哪儿改
+      // 权限被拒、没有摄像头、被别的应用占用是三回事，分开提示
       const name = e && e.name;
       if (name === "NotAllowedError") toast("摄像头权限被拒绝，请在浏览器设置里允许，或手动输入扎号");
       else if (name === "NotFoundError") toast("这台设备没有可用的摄像头，请手动输入扎号");
-      else toast("打不开摄像头，请手动输入扎号");
+      else if (name === "NotReadableError") toast("摄像头被别的程序占用了，关掉它再试");
+      else toast("打不开摄像头（" + (name || "未知错误") + "），请手动输入扎号");
     }
   },
   stopCamera() {
