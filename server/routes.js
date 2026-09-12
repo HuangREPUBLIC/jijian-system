@@ -26,6 +26,8 @@ for (const m of ["get", "post", "put", "patch", "delete", "all"]) {
 }
 
 const jsonParseSafe = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
+// 件数/金额进通知文案前先收一下小数：裁床件数是 DOUBLE，30 有可能读成 30.000000000000004
+const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
 
 // 字段被改动时通知里"改成了 XX"这句该怎么拼：只改一个字段就带上新值；改了好几个字段就把
 // 字段名都列出来(超过3个截断+总数)，不再统一说一句看不出改了啥的"修改了XX"。
@@ -464,19 +466,32 @@ router.post("/scan", A.authRequired, async (req, res) => {
     bundle, remaining
   });
 
-  // 打完这一笔如果整单到 100%，给管理层发一条完工通知。
-  // 放在响应之后、不 await：这段聚合查询没必要拖慢工人扫码的响应。
+  // 打完这一笔要做两件后续事，都放在响应之后、不 await：这些聚合查询没必要拖慢工人扫码的响应。
+  //   1) 这道工序整扎做完 → 给管理层发一条打点通知
+  //   2) 整单到 100%       → 发完工通知
+  // 打点通知只在"整扎某道工序做完"时发，不逐笔发：一张 130 件的单有 5 扎 × 3 道工序，
+  // 分次打点的话逐笔发会把管理层的消息列表刷爆。
   (async () => {
     try {
+      const st = await db.prepare("SELECT code, name FROM jj_styles WHERE id=?").get(order.style_id);
+      const styleLabel = (st && (st.code || st.name)) || "";
+
+      if (remaining === 0) {
+        const target = `${styleLabel} · 扎号${bundle.bundle_no}`;
+        const what = `完成「${proc.name}」${round2(bundle.qty)}件`;
+        await notifyManagers(`${actor.name} ${target} ${what}`, "/cutprogress/" + order.id, req.user.id,
+          { actorName: actor.name, targetLabel: target, what,
+            tag: "scan-" + bundle.id + "-" + proc.id });
+      }
+
       const done = await cutting.completedByOrder(order.id);
       if (order.total_qty > 0 && done >= order.total_qty) {
-        const st = await db.prepare("SELECT code, name FROM jj_styles WHERE id=?").get(order.style_id);
-        const label = `${(st && (st.code || st.name)) || ""} · 床次${order.bed_no}`;
-        await notifyManagers(`${label} 已全部完工`, "/cutorders", null,
+        const label = `${styleLabel} · 床次${order.bed_no}`;
+        await notifyManagers(`${label} 已全部完工`, "/cutprogress/" + order.id, null,
           { actorName: "系统", targetLabel: label,
             what: `已全部完工（${Math.round(order.total_qty)}件）`, tag: "cut-" + order.id });
       }
-    } catch (e) { console.error("[notify] 完工检查失败", e); }
+    } catch (e) { console.error("[notify] 打点后续通知失败", e); }
   })();
 });
 
@@ -534,13 +549,31 @@ router.get("/attendance", A.authRequired, async (req, res) => {
   res.json({ attendance: rows });
 });
 
-/* ---------------- 完成百分比：日效率% = 当天 sum(完成件数/工序小时定额) / 当天出勤小时 ---------------- */
+/* ---------------- 完成百分比：日效率% = 当天 sum(完成件数/工序小时定额) / 当天出勤小时 ----------------
+ * 两种打点记录的定额存在不同的地方，所以要分别折算：
+ *   扫扎打点  → jj_cut_order_processes.daily_quota（一天做多少件），/ 每天标准工时 得到小时定额
+ *   自由打点  → jj_processes.hour_quota（一小时做多少件），直接用
+ * 原来这里是 `JOIN jj_processes`（内连接）：扫扎记录的 process_id 指向 jj_style_processes，
+ * 在工序模板表里没有对应行，整条被过滤掉——现场全部走扫扎，效率看板因此永远是 0。 */
+const STD_WORK_HOURS = 8;   // 一个标准工作日按 8 小时算，日定额↔小时定额 的换算基准
+const EFF_HOURS_EXPR = `CASE
+    WHEN cop.daily_quota > 0 THEN s.qty * ${STD_WORK_HOURS} / cop.daily_quota
+    WHEN p.hour_quota > 0 THEN s.qty * 1.0 / p.hour_quota
+    ELSE 0 END`;
 async function effectiveHours(userId, datePattern, exact) {
-  const sql = exact
-    ? "SELECT COALESCE(SUM(qty * 1.0 / p.hour_quota),0) AS eh FROM jj_scan_records s JOIN jj_processes p ON p.id = s.process_id WHERE s.user_id=? AND s.date=?"
-    : "SELECT COALESCE(SUM(qty * 1.0 / p.hour_quota),0) AS eh FROM jj_scan_records s JOIN jj_processes p ON p.id = s.process_id WHERE s.user_id=? AND s.date LIKE ?";
-  const row = await db.prepare(sql).get(userId, datePattern);
+  const row = await db.prepare(`
+    SELECT COALESCE(SUM(${EFF_HOURS_EXPR}),0) AS eh
+    FROM jj_scan_records s
+    LEFT JOIN jj_cut_order_processes cop ON cop.id = s.order_process_id
+    LEFT JOIN jj_processes p ON p.id = s.process_id
+    WHERE s.user_id = ? AND s.date ${exact ? "=" : "LIKE"} ?`).get(userId, datePattern);
   return row ? row.eh : 0;
+}
+// 某人某段时间打了多少件（效率看板要显示的产出，跟折算出来的"时效小时"是两回事）
+async function scannedQty(userId, datePattern) {
+  const row = await db.prepare(
+    "SELECT COALESCE(SUM(qty),0) AS q FROM jj_scan_records WHERE user_id=? AND date LIKE ?").get(userId, datePattern);
+  return row ? Number(row.q) || 0 : 0;
 }
 async function attendanceSum(userId, datePattern) {
   const row = await db.prepare("SELECT COALESCE(SUM(hours),0) AS h FROM jj_attendance WHERE user_id=? AND date LIKE ?").get(userId, datePattern);
@@ -576,10 +609,17 @@ router.get("/efficiency/summary", A.authRequired, async (req, res) => {
   const { month } = req.query;
   if (!month) return res.status(400).json({ error: "缺少月份" });
   const users = await db.prepare("SELECT * FROM users WHERE deleted = 0 AND role <> 'admin'").all();
+  const roles = await getSetting("roles", []);
   const list = await Promise.all(users.map(async (u) => {
     const eh = await effectiveHours(u.id, month + "%", false);
     const attHours = await attendanceSum(u.id, month + "%");
-    return { userId: u.id, name: u.name, effectiveHours: eh, attendanceHours: attHours, percent: attHours > 0 ? eh / attHours : null };
+    // 看板不带工资：工资是「薪资管理」的内容，只给管理员/主管看，效率榜所有人都能开
+    return {
+      userId: u.id, name: u.name, role: u.role, roleLabel: roleLabelWith(roles, u.role),
+      qty: await scannedQty(u.id, month + "%"),
+      effectiveHours: eh, attendanceHours: attHours,
+      percent: attHours > 0 ? eh / attHours : null
+    };
   }));
   res.json({ month, list });
 });
@@ -616,7 +656,10 @@ router.get("/payroll/summary", A.authRequired, A.managerRequired, async (req, re
   if (!month) return res.status(400).json({ error: "缺少月份" });
   // 薪资表不列管理员（管理员不是计件工，没有计件工资），跟员工列表口径一致
   const users = await db.prepare("SELECT * FROM users WHERE deleted = 0 AND role <> 'admin'").all();
-  const list = await Promise.all(users.map(async (u) => Object.assign({ userId: u.id, name: u.name }, await payrollFor(u.id, month))));
+  const roles = await getSetting("roles", []);
+  const list = await Promise.all(users.map(async (u) => Object.assign(
+    { userId: u.id, name: u.name, role: u.role, roleLabel: roleLabelWith(roles, u.role) },
+    await payrollFor(u.id, month))));
   res.json({ month, list });
 });
 
@@ -662,21 +705,46 @@ router.get("/operations", A.authRequired, A.managerRequired, async (req, res) =>
   res.json({ logs: rows });
 });
 
+/* 打点记录：计件工/临时工只看自己打的点，分厂主管/工厂管理员看全员（还能带 userId 单看一个人）。
+ *
+ * 工序名必须靠三个 LEFT JOIN 取：扫扎打点的 process_id 指向 jj_style_processes，
+ * 在 jj_processes 里根本没有对应行。这里原来写的是 `JOIN jj_processes`（内连接），
+ * 等于把所有扫扎记录都过滤掉了，页面上永远是"这天还没有打点记录"。 */
 router.get("/scan-all", A.authRequired, async (req, res) => {
   const { date, month } = req.query;
   if (!date && !month) return res.status(400).json({ error: "缺少日期或月份" });
-  const rows = date
-    ? await db.prepare(`
-        SELECT s.*, u.name AS user_name, p.name AS process_name FROM jj_scan_records s
-        JOIN users u ON u.id = s.user_id JOIN jj_processes p ON p.id = s.process_id
-        WHERE s.date = ? ORDER BY s.created_at DESC
-      `).all(date)
-    : await db.prepare(`
-        SELECT s.*, u.name AS user_name, p.name AS process_name FROM jj_scan_records s
-        JOIN users u ON u.id = s.user_id JOIN jj_processes p ON p.id = s.process_id
-        WHERE s.date LIKE ? ORDER BY s.created_at DESC LIMIT 300
-      `).all(month + "%");
-  res.json({ records: rows });
+  const seeAll = A.isManager(req.user);
+  const onlyUserId = seeAll ? (req.query.userId || null) : req.user.id;
+
+  const SEL = `SELECT s.*, u.name AS user_name, u.role AS user_role,
+      cop.name AS cop_name, cop.show_price, sp.name AS sp_name, p.name AS proc_name,
+      b.bundle_no, b.ticket_no, b.color, b.size,
+      st.code AS style_code, st.name AS style_name, o.bed_no
+    FROM jj_scan_records s
+    JOIN users u ON u.id = s.user_id
+    LEFT JOIN jj_cut_order_processes cop ON cop.id = s.order_process_id
+    LEFT JOIN jj_style_processes sp ON sp.id = s.process_id
+    LEFT JOIN jj_processes p ON p.id = s.process_id
+    LEFT JOIN jj_cut_bundles b ON b.id = s.bundle_id
+    LEFT JOIN jj_cut_orders o ON o.id = s.order_id
+    LEFT JOIN jj_styles st ON st.id = s.style_id
+    WHERE `;
+  const where = [], args = [];
+  if (date) { where.push("s.date = ?"); args.push(date); }
+  else { where.push("s.date LIKE ?"); args.push(month + "%"); }
+  if (onlyUserId) { where.push("s.user_id = ?"); args.push(onlyUserId); }
+  const rows = await db.prepare(
+    SEL + where.join(" AND ") + " ORDER BY s.created_at DESC LIMIT " + (date ? 500 : 300)).all(...args);
+
+  res.json({
+    scope: seeAll ? "all" : "mine",
+    records: rows.map((r) => Object.assign(r, {
+      process_name: r.cop_name || r.sp_name || r.proc_name || "自由打点",
+      // 工序上关了"显示工价"就连带不报金额，跟打点页/菲票上的口径保持一致
+      amount: r.show_price === 0 ? null
+        : Math.round((Number(r.qty) || 0) * (Number(r.unit_price) || 0) * 100) / 100
+    }))
+  });
 });
 
 /* ---------------- 款式图上传 ---------------- */
@@ -881,13 +949,10 @@ router.get("/styles/:id/syncable-orders", A.authRequired, A.managerRequired, asy
            (SELECT COALESCE(SUM(p.unit_price),0) FROM jj_cut_order_processes p WHERE p.order_id = o.id) AS total_price
     FROM jj_cut_orders o WHERE o.style_id = ? AND o.deleted = 0
     ORDER BY o.bed_no DESC`).all(req.params.id);
-  const done = await cutting.completedByOrders(rows.map((r) => r.id));
+  const prog = await cutting.progressByOrders(rows.map((r) => r.id));
   res.json({ list: rows.map((r) => {
-    const completed = done[r.id] || 0;
-    return Object.assign({}, r, {
-      completed_qty: completed,
-      percent: r.total_qty > 0 ? Math.round((completed / r.total_qty) * 100) : 0
-    });
+    const g = prog[r.id] || { completed: 0, percent: 0 };
+    return Object.assign({}, r, { completed_qty: g.completed, percent: g.percent });
   }) });
 });
 

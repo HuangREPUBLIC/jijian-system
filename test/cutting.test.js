@@ -219,11 +219,12 @@ async function call(method, p, token, body) {
   // 剪线 10/10、烫工 4/10 → 该扎"已完成数" = min(10,4) = 4
   ok(prog.j.bundles[0].done === 4, "每扎已完成数 = 各工序完成数的最小值");
   ok(prog.j.completed_qty === 4, "T12 裁床单已完成件数 = 各扎已完成数之和");
-  // 两道工序（剪线/烫工）里剪线已整扎做完、烫工没有 → 1/2 道工序整扎完工 = 50%
-  // （brief 原断言写的是 0%，跟它自己上一行的注释"两道工序只做完一道"自相矛盾：
-  // 剪线明明已经 10/10 做完了，占比不该是 0。这里按接口文档"已整扎做完的工序数/工序总数"
-  // 的口径改成 50，跟 process-progress 那边算出来的数一致）
-  ok(prog.j.bundles[0].percent === 50, "两道工序只做完一道，完工工序占比 50%");
+  // 进度条口径 = 做掉的工序件数 / 总工作量：剪线 10 + 烫工 4 = 14 件，总量 10件 × 2道 = 20 → 70%。
+  // （老口径是"整扎做完的工序道数/总道数"= 50%，那是个台阶函数：烫工做到 9/10 件也还算 0 道，
+  // 现场看进度条不动。道数另外用 finished_procs 出，两个口径并存不互相顶替。）
+  ok(prog.j.bundles[0].percent === 70, "进度条 = 工序件数进度：(10+4)/(10×2) = 70%");
+  ok(prog.j.bundles[0].finished_procs === 1, "两道工序只整扎做完一道");
+  ok(prog.j.work_percent === 70, "整单工序件数进度同口径");
 
   const pp = await call("GET", `/cut-orders/${so}/process-progress`, aT);
   ok(pp.j.processes.length === 2, "工序进展列出两道工序");
@@ -233,6 +234,32 @@ async function call(method, p, token, body) {
 
   const bd = await call("GET", `/bundles/${bundle1.id}`, aT);
   ok(bd.j.processes.length === 2 && bd.j.processes[1].remaining === 6, "生产进度详情：每道工序剩余件数");
+
+  // —— 打点记录：范围按岗位分，而且扫扎记录必须查得出来 ——
+  // 这里守的是一个真出过的 bug：/scan-all 原来用 `JOIN jj_processes` 内连接取工序名，
+  // 而扫扎记录的 process_id 指向 jj_style_processes，整批被过滤掉，页面永远空。
+  const slogA = await call("GET", "/scan-all?date=2026-09-09", aT);
+  ok(slogA.status === 200 && slogA.j.scope === "all", "管理员看打点记录 = 全员范围");
+  const mineRows = slogA.j.records.filter(r => r.user_id === wkId);
+  ok(mineRows.length > 0, "扫扎产生的打点记录能被打点记录页查出来");
+  ok(mineRows.every(r => r.process_name && r.process_name !== "自由打点"), "打点记录带得出扫扎的工序名");
+  ok(mineRows.some(r => r.bundle_no && r.ticket_no), "打点记录带得出扎号/菲票号");
+  ok(slogA.j.records.every(r => r.user_name), "打点记录带得出打点人姓名");
+
+  const slogW = await call("GET", "/scan-all?date=2026-09-09", wT);
+  ok(slogW.status === 200 && slogW.j.scope === "mine", "计件工看打点记录 = 只看自己");
+  ok(slogW.j.records.length > 0 && slogW.j.records.every(r => r.user_id === wkId), "计件工只拿得到自己的打点记录");
+  // 计件工传 userId 想看别人的，也只会拿到自己的
+  const slogSpy = await call("GET", `/scan-all?date=2026-09-09&userId=${admId}`, wT);
+  ok(slogSpy.j.records.every(r => r.user_id === wkId), "计件工传 userId 也越不过自己的范围");
+
+  // —— 打点通知：整扎某道工序做完时给管理层发一条 ——
+  // 剪线在 T12 里已经被计件工整扎做完（10/10），管理员应该收到一条这个扎的通知
+  const notifs = (await call("GET", "/notifications", aT)).j.list || [];
+  ok(notifs.some(n => n.what && n.what.indexOf("完成「剪线」") === 0),
+    "整扎工序做完给管理层发了打点通知");
+  ok(!notifs.some(n => n.what && n.what.indexOf("完成「烫工」") === 0),
+    "工序没整扎做完(烫工 4/10)不发通知，不刷屏");
 
   // —— T9 改裁床件数：不能改到低于已完成数 ——
   ok((await call("PATCH", `/bundles/${bundle1.id}`, aT, { qty: 3 })).status === 400, "裁床件数不能改到低于已完成数");

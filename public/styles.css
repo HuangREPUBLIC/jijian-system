@@ -800,3 +800,98 @@ img{outline:1px solid rgba(0,0,0,.1);outline-offset:-1px}
 /* 打印：排版完成后的提示卡 */
 .print-ready{border:1px solid var(--ok);background:var(--ok-soft)}
 .print-ready .row-label{color:var(--ok-ink)}
+
+/* ==========================================================================
+   打点记录 / 效率看板 / 薪资管理
+   三个页面原来都是"一行灰色小字塞满所有信息"的列表，数字一眼扫不出来。
+   统一改成：左边是谁/排名，中间是主体和一条进度/明细，右边是那个要看的大数字。
+   ========================================================================== */
+
+/* 小号头像：通知卡片的 .avatar.sm 只在桌面端定义(手机端用 52px 大头像)，
+   这里另起一个名字，免得改到通知那边的观感 */
+.avatar.mini{width:34px;height:34px;font-size:var(--fs-cap)}
+
+/* 横向筛选条：人多时能左右划，不换行把页面撑高 */
+.chiprow{display:flex;gap:8px;padding:0 16px 2px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.chiprow::-webkit-scrollbar{display:none}
+.chiprow .chip{flex:none;padding:6px 14px;min-height:32px;font-size:var(--fs-cap)}
+
+/* ---------- 打点记录 ---------- */
+.slog-item{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;
+  border-bottom:.5px solid var(--line)}
+.slog-item:last-child{border-bottom:0}
+.slog-main{flex:1;min-width:0}
+.slog-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.slog-who{font-size:var(--fs-sm);color:var(--ink-2)}
+.slog-proc{font-size:var(--fs-md);font-weight:600;letter-spacing:var(--track-title)}
+.slog-top .tag{background:var(--sky-soft);color:var(--blue-2)}
+.slog-sub{font-size:var(--fs-cap);color:var(--ink-2);margin-top:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slog-time{font-size:var(--fs-micro);color:var(--ink-3);margin-top:3px;font-variant-numeric:tabular-nums}
+.slog-right{flex:none;text-align:right;padding-left:4px}
+.slog-qty{font-size:var(--fs-lg);font-weight:700;line-height:1.2;
+  font-variant-numeric:tabular-nums;letter-spacing:var(--track-title)}
+.slog-unit{font-size:var(--fs-micro);font-weight:400;color:var(--ink-2);margin-left:2px}
+.slog-amt{font-size:var(--fs-cap);color:var(--ok-ink);margin-top:2px;font-variant-numeric:tabular-nums}
+
+/* ---------- 效率看板：完成度排行 ---------- */
+.rank-item{display:flex;align-items:center;gap:11px;padding:12px 14px;
+  border-bottom:.5px solid var(--line)}
+.rank-item:last-child{border-bottom:0}
+.rank-no{flex:none;width:26px;height:26px;border-radius:50%;display:inline-flex;
+  align-items:center;justify-content:center;font-size:var(--fs-cap);font-weight:700;
+  background:var(--bg);color:var(--ink-2);box-shadow:inset 0 0 0 .5px var(--line-2);
+  font-variant-numeric:tabular-nums}
+/* 前三名给颜色，不给奖杯图标：车间的老机型对 emoji 渲染不一致 */
+.rank-no.top1{background:#F5C518;color:#4A3500;box-shadow:none}
+.rank-no.top2{background:#C7CBD1;color:#3A3F45;box-shadow:none}
+.rank-no.top3{background:#E0A473;color:#4A2C10;box-shadow:none}
+.rank-main{flex:1;min-width:0}
+.rank-top{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.rank-name{font-size:var(--fs-md);font-weight:600;letter-spacing:var(--track-title);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 三段明细在 375px 宽的手机上一行放不下，允许折行——截成省略号会把"时效"的数值吃掉 */
+.rank-sub{font-size:var(--fs-cap);color:var(--ink-2);margin-top:5px;line-height:1.45;text-wrap:pretty}
+.rank-right{flex:none;text-align:right;min-width:58px}
+.rank-pct{font-size:var(--fs-lg);font-weight:700;line-height:1.15;
+  font-variant-numeric:tabular-nums;letter-spacing:var(--track-title)}
+.rank-pct-l{font-size:var(--fs-micro);color:var(--ink-2);margin-top:2px}
+/* 完成度的三档颜色：达标绿 / 接近黄 / 落后红。文字用加深版色值，浅底上才读得清 */
+.rank-pct.ok,.sum-num.ok{color:var(--ok-ink)}
+.rank-pct.warn,.sum-num.warn{color:var(--warn-ink)}
+.rank-pct.bad,.sum-num.bad{color:var(--bad-ink)}
+.rank-pct.none{color:var(--ink-3)}
+.pbar.lg{height:8px;border-radius:4px}
+.pbar i.ok{background:var(--ok)}
+.pbar i.warn{background:var(--warn)}
+.pbar i.bad{background:var(--bad)}
+
+/* ---------- 薪资管理 ---------- */
+.pay-card{margin-bottom:12px}
+.pay-head{display:flex;align-items:center;gap:10px;padding:13px 14px 11px}
+.pay-who{flex:1;min-width:0}
+.pay-name{font-size:var(--fs-md);font-weight:600;letter-spacing:var(--track-title);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pay-role{font-size:var(--fs-cap);color:var(--ink-2);margin-top:1px}
+.pay-tot{flex:none;text-align:right}
+.pay-tot-v{font-size:var(--fs-xl);font-weight:700;line-height:1.1;color:var(--blue-2);
+  font-variant-numeric:tabular-nums;letter-spacing:var(--track-tight)}
+.pay-tot-l{font-size:var(--fs-micro);color:var(--ink-2);margin-top:2px}
+/* 四项拆成等宽方格：原来它们挤在一行小灰字里，看不出哪项是哪项，也看不出扣罚是往下减的 */
+.pay-grid{display:grid;grid-template-columns:repeat(4,1fr);
+  border-top:.5px solid var(--line);background:var(--line)}
+.pay-cell{background:var(--card);padding:10px 4px;text-align:center}
+.pay-grid .pay-cell + .pay-cell{margin-left:.5px}
+.pay-v{font-size:var(--fs-md);font-weight:650;line-height:1.2;font-variant-numeric:tabular-nums}
+.pay-v.minus{color:var(--bad-ink)}
+.pay-v.zero{color:var(--ink-3);font-weight:500}
+.pay-k{font-size:var(--fs-micro);color:var(--ink-2);margin-top:3px}
+.pay-edit{padding:0 14px 14px;background:var(--bg)}
+.pay-edit .field{background:none;padding-left:0;padding-right:0}
+.pay-edit .field:last-of-type{border-bottom:0;padding-bottom:12px}
+
+/* ---------- 进度条那一行的补充说明 ---------- */
+/* 进度条报的是"干了多少活"(工序件数)，能出货的件数是另一个口径，
+   用这行小字挂在条子下面，免得两个数摆在一起看着像打架 */
+.cc-note{font-size:var(--fs-micro);color:var(--ink-2);padding:0 12px 10px;margin-top:-6px;text-wrap:pretty}
+.cc-pct-sub{color:var(--ink-3)}

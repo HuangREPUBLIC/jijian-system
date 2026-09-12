@@ -40,7 +40,8 @@ let state = {
     ticketInput: "", bundle: null, bundleOrder: null, bundleProcs: null, camOn: false, camMsg: "" },
   att: { userId: "", date: todayStr(), records: null },
   eff: { month: monthStr(), list: null },
-  slog: { date: todayStr(), records: null },
+  // 打点记录：scope 是后端按岗位定的范围（mine=只有自己 / all=全员），who 是管理层加的人员筛选
+  slog: { date: todayStr(), records: null, scope: "mine", who: "" },
   pay: { month: monthStr(), list: null, mine: null, editing: "" },
   empKw: "", empPage: 1,
   pushOn: false,
@@ -380,7 +381,12 @@ async function loadView(v) {
     state.eff.list = (await api("GET", "/efficiency/summary?month=" + state.eff.month)).list || [];
     return;
   }
-  if (v === "scanlog") { state.slog.records = (await api("GET", "/scan-all?date=" + state.slog.date)).records || []; return; }
+  if (v === "scanlog") {
+    const r = await api("GET", "/scan-all?date=" + state.slog.date);
+    state.slog.records = r.records || [];
+    state.slog.scope = r.scope || "mine";
+    return;
+  }
   if (v === "admin") {
     const [u, r] = await Promise.all([api("GET", "/users"), api("GET", "/roles")]);
     state.users = u.users || []; state.roles = r.roles || [];
@@ -1207,21 +1213,71 @@ function vAttendance() {
   </section>`;
 }
 
-/* ---------- 效率看板 ---------- */
+/* ---------- 效率看板 ----------
+ * 完成度 = 时效小时 / 出勤小时。时效小时是把打点件数按工序定额折算回来的"应该花多少小时"，
+ * 所以 100% 就是刚好做到定额，超过 100% 是快过定额。没录考勤的人算不出完成度，
+ * 排在榜尾单列，不能当成 0% 跟真干得慢的人混在一起。
+ */
+function effBarPct(p) { return Math.max(0, Math.min(100, Math.round((p || 0) * 100))); }
+function effTone(p) { return p >= 1 ? "ok" : p >= 0.8 ? "warn" : "bad"; }
+
 function vEfficiency() {
-  const list = (state.eff.list || []).slice().sort((a, b) =>
-    (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
-  return `<section class="group"><div class="card">
+  const raw = state.eff.list;
+  const head = `<section class="group"><div class="card">
     <label class="field"><span>月份</span>${monthFieldHtml("ef-month", state.eff.month, "A.setEffMonth(this.value)")}</label>
-  </div></section>
-  <section class="group"><div class="card">
-    ${state.eff.list === null ? `<div class="empty">加载中…</div>` : list.length ? list.map(x => `
-      <div class="row-item">
-        <div class="row-main"><div class="row-label">${esc(x.name)}</div>
-          <div class="row-sub">出勤 ${num(x.attendanceHours)} 小时 · 时效 ${Math.round(x.effectiveHours * 10) / 10} 小时</div></div>
-        <span class="tag ${x.percent === null ? "role" : x.percent < 1 ? "warn" : "ok"}">${x.percent === null ? "暂无考勤" : pctText(x.percent)}</span>
-      </div>`).join("") : `<div class="empty">这个月还没有数据</div>`}
   </div></section>`;
+  if (raw === null) return head + `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+
+  // 这个月完全没动静的人（没打点也没考勤）不占榜单位置
+  const list = raw.filter(x => x.qty > 0 || x.attendanceHours > 0);
+  const rated = list.filter(x => x.percent !== null).sort((a, b) => b.percent - a.percent);
+  const unrated = list.filter(x => x.percent === null).sort((a, b) => (b.qty || 0) - (a.qty || 0));
+
+  const totalQty = list.reduce((n, x) => n + (Number(x.qty) || 0), 0);
+  const totalAtt = list.reduce((n, x) => n + (Number(x.attendanceHours) || 0), 0);
+  const totalEff = list.reduce((n, x) => n + (Number(x.effectiveHours) || 0), 0);
+  const avg = totalAtt > 0 ? totalEff / totalAtt : null;
+
+  const card = (x, rank) => {
+    const p = x.percent;
+    const tone = p === null ? "none" : effTone(p);
+    return `<div class="rank-item">
+      <span class="rank-no${rank !== null && rank <= 3 ? " top" + rank : ""}">${rank === null ? "—" : rank}</span>
+      <div class="rank-main">
+        <div class="rank-top">
+          <span class="rank-name">${esc(x.name)}</span>
+          <span class="tag role">${esc(x.roleLabel || "")}</span>
+        </div>
+        <div class="pbar lg"><i class="${tone}" style="width:${p === null ? 0 : effBarPct(p)}%"></i></div>
+        <div class="rank-sub">打点 ${num(x.qty)} 件 · 出勤 ${num(x.attendanceHours)} 小时 · 时效 ${num(x.effectiveHours)} 小时</div>
+      </div>
+      <div class="rank-right">
+        <div class="rank-pct num ${tone}">${p === null ? "—" : pctText(p)}</div>
+        <div class="rank-pct-l">${p === null ? "缺考勤" : "完成度"}</div>
+      </div>
+    </div>`;
+  };
+
+  return head + `
+  <section class="group"><div class="sum-bar">
+    <div class="sum-item"><div class="sum-num num">${num(totalQty)}</div><div class="sum-label">打点件数</div></div>
+    <div class="sum-item"><div class="sum-num num">${num(totalAtt)}</div><div class="sum-label">出勤小时</div></div>
+    <div class="sum-item"><div class="sum-num num ${avg === null ? "" : effTone(avg)}">${avg === null ? "—" : pctText(avg)}</div>
+      <div class="sum-label">整体完成度</div></div>
+  </div></section>
+
+  <section class="group">
+    <div class="group-title">完成度排行 · ${esc(fmtMonth(state.eff.month))}</div>
+    <div class="card">${rated.length ? rated.map((x, i) => card(x, i + 1)).join("")
+      : `<div class="empty">这个月还没有能算完成度的人（要先录考勤）</div>`}</div>
+  </section>
+
+  ${unrated.length ? `<section class="group">
+    <div class="group-title">缺考勤，算不出完成度</div>
+    <div class="card">${unrated.map(x => card(x, null)).join("")}</div>
+    <div class="pe-hint">完成度 = 时效小时 ÷ 出勤小时，这些人本月没有考勤记录，
+      去「考勤录入」补上工时就能进排行。</div>
+  </section>` : ""}`;
 }
 
 
@@ -1532,9 +1588,12 @@ function vCutPrint() {
 }
 
 /* ---------- 生产进度（按扎） ----------
- * 两个容易混的口径，这里都要显示，不能互相顶替：
- *   已完成数   = 该扎各道工序完成件数的**最小值**（所有工序都过了的件数）
- *   进度百分比 = 已整扎做完的**工序数** / 工序总数
+ * 三个容易混的口径，这里都要显示，不能互相顶替：
+ *   已完成数  = 该扎各道工序完成件数的**最小值**（所有工序都过了、能出货的件数）
+ *   进度条    = 做掉的工序件数 / 总工作量（件数 × 工序道数）—— 干了多少活
+ *   x/y 道    = 已整扎做完的工序道数
+ * 进度条以前走的是"整扎做完的工序道数/总道数"，那是个台阶函数：一道工序做到 19/20 件
+ * 也还算 0 道，条子半天不动；换成按件数加权后每打一笔点都能看见在走。
  */
 function vCutProgress() {
   const d = state.pg;
@@ -1542,7 +1601,8 @@ function vCutProgress() {
   const o = d.order, procs = d.processes;
   const kw = (state.pgKw || "").trim();
   const list = kw ? d.bundles.filter(b => String(b.bundle_no).includes(kw) || String(b.ticket_no).includes(kw)) : d.bundles;
-  const pct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;
+  const pct = d.work_percent || 0;                              // 进度条：工序件数进度
+  const shipPct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;  // 能出货的件数占比
   return `<section class="group"><div class="card style-card">
       <div class="sc-head">
         ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}"
@@ -1561,8 +1621,10 @@ function vCutProgress() {
         </div>
       </div>
       <div class="cc-prog">
-        <span class="cc-prog-t">已完成件数 ${num(d.completed_qty)}</span>
+        <span class="cc-prog-t">工序进度</span>
         <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      <div class="cc-note">已做 ${num(d.work_done)} / ${num(d.work_total)} 工序件
+        · 全工序做完 ${num(d.completed_qty)} 件（${shipPct}%）</div>
     </div></section>
 
     <section class="group"><div class="card">
@@ -1589,7 +1651,8 @@ function vCutProgress() {
             <div class="cc-prog" style="padding:8px 0 0">
               <span class="cc-prog-t">已完成数 ${num(b.done)}</span>
               <div class="pbar"><i style="width:${b.percent}%"></i></div>
-              <span class="cc-pct">${procs.filter(p => (b.perProcess || {})[p.id] >= b.qty).length}/${procs.length} 道</span></div>
+              <span class="cc-pct num">${b.percent}%</span>
+              <span class="cc-pct cc-pct-sub">${b.finished_procs}/${procs.length} 道</span></div>
           </div><span class="chev">›</span></button>
         ${isManager() ? `<div class="qty-edit-row">
           <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button>
@@ -1603,8 +1666,7 @@ function vBundleProgress() {
   const d = state.bp;
   if (!d) return `<div class="empty">加载中…</div>`;
   const b = d.bundle, o = d.order, procs = d.processes;
-  const doneProcs = procs.filter(p => p.done >= b.qty).length;
-  const pct = procs.length ? Math.round((doneProcs / procs.length) * 100) : 0;
+  const doneProcs = d.finished_procs, pct = d.work_percent || 0;
   return `<section class="group"><div class="card">
       <div class="row-item"><div class="row-main">
         <div class="row-label">扎号：${b.bundle_no}</div>
@@ -1615,8 +1677,10 @@ function vBundleProgress() {
           <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
         </div>
         <div class="cc-prog" style="padding:10px 0 0">
-          <span class="cc-prog-t">已完成工序数 ${doneProcs} / ${procs.length}</span>
+          <span class="cc-prog-t">工序进度</span>
           <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+        <div class="cc-note">已做 ${num(d.work_done)} / ${num(d.work_total)} 工序件
+          · 整扎做完 ${doneProcs} / ${procs.length} 道 · 全工序做完 ${num(d.done)} 件</div>
       </div></div>
     </div></section>
 
@@ -1675,7 +1739,9 @@ function vCutOrders() {
   const doneQty = (list || []).reduce((n, o) => n + Number(o.completed_qty || 0), 0);
 
   const orderCard = (o) => {
-    const pct = o.total_qty > 0 ? Math.round((o.completed_qty / o.total_qty) * 100) : 0;
+    // 进度条走后端算的工序件数进度，跟"生产进度"页同一个口径；
+    // completed_qty（全工序做完、能出货的件数）另外用文字报，两个数不互相顶替
+    const pct = Number(o.percent) || 0;
     return `<section class="group"><div class="card cut-card">
       <div class="cc-head tap" onclick="go('cutprogress','${o.id}')">
         ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}" alt="款式图">`
@@ -1692,8 +1758,9 @@ function vCutOrders() {
         </div>
         <span class="chev">›</span>
       </div>
-      <div class="cc-prog"><span class="cc-prog-t">已完成件数 ${num(o.completed_qty)}</span>
+      <div class="cc-prog"><span class="cc-prog-t">工序进度</span>
         <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      <div class="cc-note">全工序做完 ${num(o.completed_qty)} / ${num(o.total_qty)} 件</div>
       <div class="sc-acts">
         ${isManager() ? `<button onclick="A.coMore('${o.id}')">更多</button>` : ""}
         ${isManager() ? `<button onclick="go('cutprint','${o.id}')">打印菲票</button>` : ""}
@@ -1751,18 +1818,83 @@ function vCutOrders() {
       </div></section>`}`;
 }
 
-/* ---------- 扫菲记录 ---------- */
+/* ---------- 打点记录 ----------
+ * 范围由后端按岗位定，前端只照着 scope 显示：
+ *   计件工 / 临时工      → 只有自己打的点（不显示姓名，也没有人员筛选）
+ *   分厂主管 / 工厂管理员 → 全员，多一排人员筛选和"谁打的"这一列
+ */
+const HHMM = (ms) => { const d = new Date(ms), p = n => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+const shortName = (s) => (s || "").length > 2 ? s.slice(-2) : (s || "");
+
+function slogRowHtml(r, withWho) {
+  // 扫扎打点带得出扎号/菲票/颜色尺码；自由打点这些都是空的，那一行就只剩工序名
+  const where = [
+    r.bundle_no ? `扎号 ${r.bundle_no}` : "",
+    r.ticket_no ? `菲票 ${r.ticket_no}` : "",
+    r.color || "", r.size || ""
+  ].filter(Boolean).join(" · ");
+  const styleTag = r.style_code || r.style_name
+    ? `<span class="tag">${esc(r.style_code || r.style_name)}${r.bed_no ? ` · 床次${r.bed_no}` : ""}</span>` : "";
+  return `<div class="slog-item">
+    ${withWho ? `<span class="avatar mini">${esc(shortName(r.user_name))}</span>` : ""}
+    <div class="slog-main">
+      <div class="slog-top">
+        ${withWho ? `<span class="slog-who">${esc(r.user_name)}</span>` : ""}
+        <span class="slog-proc">${esc(r.process_name)}</span>${styleTag}
+      </div>
+      ${where ? `<div class="slog-sub">${esc(where)}</div>` : ""}
+      <div class="slog-time">${HHMM(r.created_at)}</div>
+    </div>
+    <div class="slog-right">
+      <div class="slog-qty num">${num(r.qty)}<span class="slog-unit">件</span></div>
+      ${r.amount === null || r.amount === undefined ? "" : `<div class="slog-amt num">¥${num(r.amount)}</div>`}
+    </div>
+  </div>`;
+}
+
 function vScanlog() {
-  const recs = state.slog.records;
+  const sl = state.slog, all = sl.records, seeAll = sl.scope === "all";
+  if (all === null) {
+    return `<section class="group"><div class="card">
+      <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
+    </div></section>
+    <section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+  }
+  // 人员筛选只列当天真打过点的人，不拉整张员工表——没打点的人摆在这里只会碍事
+  const people = [];
+  for (const r of all) if (!people.some(x => x.id === r.user_id)) people.push({ id: r.user_id, name: r.user_name });
+  const who = people.some(x => x.id === sl.who) ? sl.who : "";
+  const recs = who ? all.filter(r => r.user_id === who) : all;
+
+  const qty = recs.reduce((n, r) => n + (Number(r.qty) || 0), 0);
+  const amt = recs.reduce((n, r) => n + (Number(r.amount) || 0), 0);
+  const hasAmt = recs.some(r => r.amount !== null && r.amount !== undefined);
+
   return `<section class="group"><div class="card">
-    <label class="field"><span>日期</span>${dateFieldHtml("sl-date", state.slog.date, "A.setSlogDate(this.value)")}</label>
+    <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
   </div></section>
-  <section class="group"><div class="card">
-    ${recs === null ? `<div class="empty">加载中…</div>` : recs.length ? recs.map(r => `
-      <div class="row-item"><div class="row-main"><div class="row-label">${esc(r.user_name)}</div>
-        <div class="row-sub">${esc(r.process_name)} · ${num(r.qty)} 件</div></div></div>`).join("")
-      : `<div class="empty">这天还没有打点记录</div>`}
-  </div></section>`;
+
+  <section class="group"><div class="sum-bar">
+    <div class="sum-item"><div class="sum-num num">${num(qty)}</div><div class="sum-label">打点件数</div></div>
+    <div class="sum-item"><div class="sum-num num">${seeAll && !who ? people.length : recs.length}</div>
+      <div class="sum-label">${seeAll && !who ? "打点人数" : "打点笔数"}</div></div>
+    <div class="sum-item"><div class="sum-num num">${hasAmt ? num(amt) : "—"}</div><div class="sum-label">计件金额（元）</div></div>
+  </div></section>
+
+  ${seeAll && people.length > 1 ? `<section class="group">
+    <div class="chiprow">
+      <button class="chip${who ? "" : " on"}" onclick="A.setSlogWho('')">全部</button>
+      ${people.map(x => `<button class="chip${who === x.id ? " on" : ""}"
+        onclick="A.setSlogWho('${x.id}')">${esc(x.name)}</button>`).join("")}
+    </div>
+  </section>` : ""}
+
+  <section class="group">
+    <div class="group-title">${seeAll ? (who ? esc((people.find(x => x.id === who) || {}).name) + " 的打点" : "全员打点") : "我的打点"}
+      · ${esc(fmtDate(sl.date))}${recs.length ? ` · ${recs.length} 笔` : ""}</div>
+    <div class="card">${recs.length ? recs.map(r => slogRowHtml(r, seeAll && !who)).join("")
+      : `<div class="empty">${seeAll ? "这天还没有人打点" : "这天你还没有打点记录"}</div>`}</div>
+  </section>`;
 }
 
 /* ---------- 管理（员工账号 + 新增员工，仅管理员/主管可见） ---------- */
@@ -1822,28 +1954,76 @@ function vAdmin() {
 }
 
 /* ---------- 薪资管理（工作台入口，仅管理员/主管可见） ---------- */
+/* ---------- 薪资管理 ----------
+ * 一人一张卡：上面是姓名/岗位和应发合计，下面把四项拆成一行方格（计件是算出来的，
+ * 餐补/奖金/扣罚是手工调整项）。原来这四项挤在一行小灰字里，看不出哪项是哪项，
+ * 也看不出扣罚是往下减的。
+ */
+const PAY_CELLS = [
+  ["pieceWage", "计件", ""], ["mealSubsidy", "餐补", ""],
+  ["bonus", "奖金", ""], ["penalty", "扣罚", "minus"]
+];
 function vPayroll() {
   if (!isManager()) return `<div class="card"><div class="empty">仅管理员或主管可访问</div></div>`;
-  return `<section class="group"><div class="card">
+  const head = `<section class="group"><div class="card">
     <label class="field"><span>月份</span>${monthFieldHtml("pay-month", state.pay.month, "A.setPayMonth(this.value)")}</label>
+  </div></section>`;
+  const raw = state.pay.list;
+  if (raw === null) return head + `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+
+  // 这个月一分钱都没有的人不铺满整页；真要给他加奖金，先改月份或者去「管理」页
+  const list = raw.filter(it => it.total !== 0 || it.pieceWage !== 0)
+    .slice().sort((a, b) => b.total - a.total);
+  const sum = (k) => list.reduce((n, it) => n + (Number(it[k]) || 0), 0);
+
+  // 0 一律走灰色：扣罚 0 也标红会让人以为真扣了钱
+  const cell = (it, [k, label, cls]) => {
+    const v = Number(it[k]) || 0;
+    return `<div class="pay-cell">
+      <div class="pay-v num ${v === 0 ? "zero" : cls}">${cls === "minus" && v ? "-" : ""}${num(v)}</div>
+      <div class="pay-k">${label}</div></div>`;
+  };
+
+  const card = (it) => `<div class="card pay-card">
+    <div class="pay-head">
+      <span class="avatar mini">${esc(shortName(it.name))}</span>
+      <div class="pay-who">
+        <div class="pay-name">${esc(it.name)}</div>
+        <div class="pay-role">${esc(it.roleLabel || "")}</div>
+      </div>
+      <div class="pay-tot">
+        <div class="pay-tot-v num">¥${num(it.total)}</div>
+        <div class="pay-tot-l">应发</div>
+      </div>
+    </div>
+    <div class="pay-grid">${PAY_CELLS.map(c => cell(it, c)).join("")}</div>
+    <div class="sc-acts">
+      <button onclick="A.editPay('${it.userId}')">${state.pay.editing === it.userId ? "收起" : "调整餐补 / 奖金 / 扣罚"}</button>
+    </div>
+    ${state.pay.editing === it.userId ? `<div class="pay-edit">
+      <label class="field"><span>餐补</span>
+        <input class="in" id="pa-meal" type="number" inputmode="decimal" step="any" value="${esc(it.mealSubsidy || "")}" placeholder="0"></label>
+      <label class="field"><span>奖金</span>
+        <input class="in" id="pa-bonus" type="number" inputmode="decimal" step="any" value="${esc(it.bonus || "")}" placeholder="0"></label>
+      <label class="field"><span>扣罚</span>
+        <input class="in" id="pa-pen" type="number" inputmode="decimal" step="any" value="${esc(it.penalty || "")}" placeholder="0"></label>
+      <div class="btn-row" style="padding:0">
+        <button class="btn block" onclick="A.savePay('${it.userId}')">保存</button>
+        <button class="btn ghost block" onclick="A.editPay('${it.userId}')">取消</button>
+      </div>
+    </div>` : ""}
+  </div>`;
+
+  return head + `
+  <section class="group"><div class="sum-bar">
+    <div class="sum-item"><div class="sum-num num">${num(sum("total"))}</div><div class="sum-label">应发合计（元）</div></div>
+    <div class="sum-item"><div class="sum-num num">${num(sum("pieceWage"))}</div><div class="sum-label">计件合计（元）</div></div>
+    <div class="sum-item"><div class="sum-num num">${list.length}</div><div class="sum-label">有工资的人数</div></div>
   </div></section>
 
-  <section class="group"><div class="card">${state.pay.list === null ? `<div class="empty">加载中…</div>`
-      : state.pay.list.length ? state.pay.list.map(it => `
-      <div class="row-item tap" onclick="A.editPay('${it.userId}')">
-        <div class="row-main"><div class="row-label">${esc(it.name)}</div>
-          <div class="row-sub num">计件 ${num(it.pieceWage)} · 餐补 ${num(it.mealSubsidy)} · 扣罚 ${num(it.penalty)} · 奖金 ${num(it.bonus)}</div></div>
-        <span class="tag hl num">${num(it.total)} 元</span>
-      </div>
-      ${state.pay.editing === it.userId ? `<div class="card-pad" style="background:var(--bg)">
-        <label class="field" style="background:none;padding-left:0;padding-right:0"><span>餐补</span>
-          <input class="in" id="pa-meal" type="number" inputmode="decimal" step="any" value="${esc(it.mealSubsidy || "")}"></label>
-        <label class="field" style="background:none;padding-left:0;padding-right:0"><span>扣罚</span>
-          <input class="in" id="pa-pen" type="number" inputmode="decimal" step="any" value="${esc(it.penalty || "")}"></label>
-        <label class="field" style="background:none;padding-left:0;padding-right:0;border:0"><span>奖金</span>
-          <input class="in" id="pa-bonus" type="number" inputmode="decimal" step="any" value="${esc(it.bonus || "")}"></label>
-        <button class="btn block" style="margin-top:12px" onclick="A.savePay('${it.userId}')">保存</button>
-      </div>` : ""}`).join("") : `<div class="empty">这个月还没有数据</div>`}</div>
+  <section class="group">
+    <div class="group-title">${esc(fmtMonth(state.pay.month))}工资</div>
+    ${list.length ? list.map(card).join("") : `<div class="card"><div class="empty">这个月还没有数据</div></div>`}
   </section>`;
 }
 
@@ -1996,7 +2176,9 @@ const A = {
       const item = (state.notif.list || []).find(x => x.id === id);
       if (item && !item.read) { item.read = true; state.notif.unread = Math.max(0, state.notif.unread - 1); }
     } catch (e) { }
-    if (link) go(link.replace(/^\//, "")); else render();
+    // 链接可以是 "/payroll" 这种纯页面，也可以是 "/cutprogress/<单id>" 这种带对象 id 的
+    if (link) { const [v, id] = link.replace(/^\//, "").split("/"); go(v, id || null); }
+    else render();
   },
   async markAllNotifRead() {
     try {
@@ -2980,7 +3162,9 @@ const A = {
   setEffMonth(v) { if (!v) return; state.eff.month = v; state.eff.list = null; go("efficiency"); },
 
   /* ---- 扫菲记录 ---- */
-  setSlogDate(v) { if (!v) return; state.slog.date = v; state.slog.records = null; go("scanlog"); },
+  setSlogDate(v) { if (!v) return; state.slog.date = v; state.slog.records = null; state.slog.who = ""; go("scanlog"); },
+  // 人员筛选是纯前端的：记录已经全在手上，不用为了切人再跑一趟接口
+  setSlogWho(id) { state.slog.who = state.slog.who === id ? "" : id; render(); },
 
   /* ---- 管理：员工 ---- */
   setEmpKw(v) {

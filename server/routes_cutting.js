@@ -69,28 +69,52 @@ function bundleDone(procIds, doneOfBundle) {
   if (!procIds.length) return 0;
   return Math.min(...procIds.map((pid) => (doneOfBundle && doneOfBundle[pid]) || 0));
 }
+// 某扎"做掉的工序件数"= Σ 各道工序完成件数（单道封顶在裁床件数，防止历史超额数据把进度顶过 100%）。
+// 进度条按它算：分母是 裁床件数 × 工序道数，也就是这一扎的总工作量。
+// 原来进度条用的是"整扎做完的工序道数 / 工序总数"——那是个台阶函数：一道工序做了 19/20 件
+// 也还是 0%，现场看不出在动，跟旁边的"已完成数"也对不上。
+function bundleWorkDone(procIds, doneOfBundle, qty) {
+  return procIds.reduce((sum, pid) =>
+    sum + Math.min((doneOfBundle && doneOfBundle[pid]) || 0, qty), 0);
+}
+function pct(done, total) { return total > 0 ? Math.round((done / total) * 100) : 0; }
 async function completedByOrder(orderId) {
   return (await completedByOrders([orderId]))[orderId] || 0;
 }
-// 批量版：列表页一次算很多单，逐单查会 N+1
-async function completedByOrders(orderIds) {
+// 批量版：列表页一次算很多单，逐单查会 N+1。
+// 一次把两个口径都算出来：completed = 全工序都过了的件数（能出货的），
+// workDone/workTotal = 工序件数，列表页的进度条走后者。
+async function progressByOrders(orderIds) {
   if (!orderIds.length) return {};
   const ph = orderIds.map(() => "?").join(",");
   const procRows = await db.prepare(`SELECT id, order_id FROM jj_cut_order_processes WHERE order_id IN (${ph})`).all(...orderIds);
-  const bundleRows = await db.prepare(`SELECT id, order_id FROM jj_cut_bundles WHERE order_id IN (${ph})`).all(...orderIds);
+  const bundleRows = await db.prepare(`SELECT id, order_id, qty FROM jj_cut_bundles WHERE order_id IN (${ph})`).all(...orderIds);
   const scanRows = await db.prepare(
     `SELECT bundle_id, order_process_id, SUM(qty) AS done FROM jj_scan_records
      WHERE order_id IN (${ph}) AND bundle_id IS NOT NULL
      GROUP BY bundle_id, order_process_id`).all(...orderIds);
   const procsOf = {}, bundlesOf = {}, doneOf = {};
   procRows.forEach((r) => (procsOf[r.order_id] || (procsOf[r.order_id] = [])).push(r.id));
-  bundleRows.forEach((r) => (bundlesOf[r.order_id] || (bundlesOf[r.order_id] = [])).push(r.id));
+  bundleRows.forEach((r) => (bundlesOf[r.order_id] || (bundlesOf[r.order_id] = [])).push(r));
   scanRows.forEach((r) => ((doneOf[r.bundle_id] || (doneOf[r.bundle_id] = {}))[r.order_process_id] = Number(r.done) || 0));
   const out = {};
   for (const oid of orderIds) {
     const pids = procsOf[oid] || [];
-    out[oid] = (bundlesOf[oid] || []).reduce((s, bid) => s + bundleDone(pids, doneOf[bid]), 0);
+    let completed = 0, workDone = 0, workTotal = 0;
+    for (const b of bundlesOf[oid] || []) {
+      completed += bundleDone(pids, doneOf[b.id]);
+      workDone += bundleWorkDone(pids, doneOf[b.id], b.qty);
+      workTotal += b.qty * pids.length;
+    }
+    out[oid] = { completed, workDone, workTotal, percent: pct(workDone, workTotal) };
   }
+  return out;
+}
+// 只要"已完工件数"的调用方（生产概览、按款汇总）继续用这个薄壳
+async function completedByOrders(orderIds) {
+  const m = await progressByOrders(orderIds);
+  const out = {};
+  for (const k of Object.keys(m)) out[k] = m[k].completed;
   return out;
 }
 
@@ -207,8 +231,11 @@ router.get("/cut-orders", A.authRequired, async (req, res) => {
     `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
      ${tail} ORDER BY o.cut_date DESC, o.created_at DESC LIMIT ${limit} OFFSET ${offset}`).all(...args);
   const total = (await db.prepare(`SELECT COUNT(*) c ${tail}`).get(...args)).c;
-  const done = await completedByOrders(rows.map((r) => r.id));
-  res.json({ list: rows.map((r) => Object.assign(r, { completed_qty: done[r.id] || 0 })), total });
+  const prog = await progressByOrders(rows.map((r) => r.id));
+  res.json({ list: rows.map((r) => {
+    const g = prog[r.id] || { completed: 0, percent: 0 };
+    return Object.assign(r, { completed_qty: g.completed, percent: g.percent });
+  }), total });
 });
 
 /* ---------------- 详情 ---------------- */
@@ -330,19 +357,29 @@ router.get("/cut-orders/:id/progress", A.authRequired, async (req, res) => {
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
   const pm = await progressMap(order.id);
   const pids = processes.map((p) => p.id);
-  let completed = 0;
+  // 这一页上并排出现三个口径，含义各不相同，别互相顶替：
+  //   completed_qty / done   所有工序都过了的件数（能出货的件数）
+  //   percent                工序件数进度 = 做掉的工序件数 / 总工作量 —— 进度条走的是它
+  //   finished_procs         整扎做完的工序道数，"x/y 道"那个标签
+  let completed = 0, workDone = 0, workTotal = 0;
   const list = bundles.map((b) => {
     const per = pm[b.id] || {};
     const done = bundleDone(pids, per);
-    completed += done;
-    // 百分比这一栏是"这一扎有几道工序已经整扎做完"，跟"已完成件数"是两个口径，别混
-    const finishedProcs = pids.filter((pid) => (per[pid] || 0) >= b.qty).length;
+    const bWork = bundleWorkDone(pids, per, b.qty);
+    const bTotal = b.qty * pids.length;
+    completed += done; workDone += bWork; workTotal += bTotal;
     return Object.assign({}, b, {
       done, perProcess: per,
-      percent: pids.length ? Math.round((finishedProcs / pids.length) * 100) : 0
+      percent: pct(bWork, bTotal),
+      work_done: bWork, work_total: bTotal,
+      finished_procs: pids.filter((pid) => (per[pid] || 0) >= b.qty).length
     });
   });
-  res.json({ order, processes, bundles: list, completed_qty: completed });
+  res.json({
+    order, processes, bundles: list, completed_qty: completed,
+    work_done: workDone, work_total: workTotal, work_percent: pct(workDone, workTotal),
+    process_count: pids.length
+  });
 });
 
 /* ---------------- 工序进展：按工序 + 颜色/尺码分解 ---------------- */
@@ -392,10 +429,19 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
     "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
     .all(bundle.id);
   const doneOf = Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
-  res.json({ bundle, order, processes: processes.map((p) => ({
-    id: p.id, name: p.name, seq: p.seq, unit_price: p.unit_price, show_price: p.show_price !== 0,
-    done: doneOf[p.id] || 0, remaining: bundle.qty - (doneOf[p.id] || 0)
-  })) });
+  const pids = processes.map((p) => p.id);
+  const workDone = bundleWorkDone(pids, doneOf, bundle.qty);
+  const workTotal = bundle.qty * pids.length;
+  res.json({
+    bundle, order,
+    done: bundleDone(pids, doneOf),
+    work_done: workDone, work_total: workTotal, work_percent: pct(workDone, workTotal),
+    finished_procs: pids.filter((pid) => (doneOf[pid] || 0) >= bundle.qty).length,
+    processes: processes.map((p) => ({
+      id: p.id, name: p.name, seq: p.seq, unit_price: p.unit_price, show_price: p.show_price !== 0,
+      done: doneOf[p.id] || 0, remaining: bundle.qty - (doneOf[p.id] || 0)
+    }))
+  });
 });
 
 /* ---------------- 按菲票号查扎（扫码打点用） ----------------
@@ -596,6 +642,6 @@ router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, asyn
 });
 
 module.exports = {
-  router, progressMap, bundleDone, completedByOrder, completedByOrders,
+  router, progressMap, bundleDone, bundleWorkDone, completedByOrder, completedByOrders, progressByOrders,
   buildSummary, jsonParse, nextTicketRange
 };
