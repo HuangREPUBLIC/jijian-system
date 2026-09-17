@@ -72,44 +72,6 @@ async function userPublicFull(u) {
   return Object.assign(A.userPublic(u), { roleLabel: roleLabelWith(roles, u.role) });
 }
 
-/* ---------------- 微信登录 ---------------- */
-async function code2Session(code) {
-  const appid = process.env.WX_APPID;
-  const secret = process.env.WX_SECRET;
-  if (!appid || !secret) {
-    throw Object.assign(new Error("尚未配置微信小程序 AppID/AppSecret，请先在微信公众平台注册"), { status: 500 });
-  }
-  const url = `https://api.weixin.qq.com/sns/jscode2session?appid=${appid}&secret=${secret}&js_code=${encodeURIComponent(code)}&grant_type=authorization_code`;
-  const r = await fetch(url);
-  const j = await r.json();
-  if (!j || j.errcode) throw Object.assign(new Error((j && j.errmsg) || "微信登录失败"), { status: 400 });
-  return j.openid;
-}
-
-// 小程序打开后先调这个：拿 openid，如果已经绑定过员工账号直接登录成功，
-// 没绑定的话前端转去"加入"流程（扫码/等待审批）
-router.post("/wx/login", async (req, res) => {
-  const { code, testOpenid, switchAccount } = req.body || {};
-  const cloudOpenid = req.headers["x-wx-openid"]; // 云托管 callContainer 自动注入的真实 openid
-  let openid;
-  if (process.env.NODE_ENV === "test" && testOpenid) {
-    openid = testOpenid; // 测试环境用假 openid，避免真的打微信接口
-  } else if (cloudOpenid) {
-    openid = cloudOpenid; // 云托管环境：直接用微信注入的 openid，无需 code2session/AppSecret
-  } else {
-    if (!code) return res.status(400).json({ error: "缺少 code" });
-    try { openid = await code2Session(code); }
-    catch (e) { return res.status(e.status || 500).json({ error: e.message }); }
-  }
-  // 换账号模式（退出登录后）：不自动登录，直接返回 openid 让前端显示填信息表单，可绑到别的账号。
-  if (switchAccount) return res.json({ needJoin: true, openid });
-  const bound = await db.prepare("SELECT user_id FROM jj_wx_bindings WHERE openid = ?").get(openid);
-  if (!bound) return res.json({ needJoin: true, openid });
-  const u = await A.userById(bound.user_id);
-  if (!u || u.deleted) return res.status(401).json({ error: "账号不存在或已被删除" });
-  res.json({ token: A.signToken(u), user: await userPublicFull(u) });
-});
-
 router.get("/me", A.authRequired, async (req, res) => res.json({ user: await userPublicFull(req.user) }));
 
 // 改自己的密码（「我的」页面里用）：只要求已登录，改的永远是 req.user 自己那条，
@@ -121,10 +83,8 @@ router.post("/password/change", A.authRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------------- 手机号 + 密码登录（网页版 / PWA 用） ----------------
- * 网页在普通浏览器里跑，没有 wx.login 拿 openid 那套能力，所以跟「跟单系统」一样走
- * 手机号+密码：账号只能由管理员在「管理」页面手动创建（初始密码默认 123456），员工自己不能注册。
- * 只是多了一种登录方式，谁能操作什么(isManager/managerRequired/TEST_OPEN_ALL)完全没动。
+/* ---------------- 手机号 + 密码登录 ----------------
+ * 跟「跟单系统」一样：账号只能由管理员在「管理」页面手动创建（初始密码默认 123456），员工自己不能注册。
  */
 router.post("/login", async (req, res) => {
   const { phone, password } = req.body || {};
@@ -132,62 +92,6 @@ router.post("/login", async (req, res) => {
   if (!u || !A.verifyPassword(password || "", u.password_hash))
     return res.status(400).json({ error: "手机号或密码不正确" });
   res.json({ token: A.signToken(u), user: await userPublicFull(u) });
-});
-
-/* ---------------- 加入 / 审批 ---------------- */
-// 扫码加入：命中已有手机号就用那个账号，没有就新建一行，都要走审批
-router.post("/join/scan", async (req, res) => {
-  const { openid, phone, name } = req.body || {};
-  if (!openid || !phone || !name) return res.status(400).json({ error: "缺少 openid/手机号/姓名" });
-  const phoneT = String(phone).trim();
-  let u = await db.prepare("SELECT * FROM users WHERE phone = ? AND deleted = 0").get(phoneT);
-  const preExisted = !!u; // 手机号已在库里 = 管理员早就手动加过这个人（等于已批准）
-  if (!u) {
-    const id = uid();
-    await db.prepare("INSERT INTO users(id,name,phone,password_hash,role,deleted,created_at) VALUES(?,?,?,?,?,0,?)")
-      .run(id, String(name).trim(), phoneT, A.hashPassword(uid()), "worker", Date.now());
-    u = await A.userById(id);
-  }
-  // 已存在的账号（管理员手动加过，或本就是管理员）扫码时直接绑定登录、免审批；
-  // 只有查无此人（真·新人自助扫码）才生成待审批申请。
-  // 绑定用 upsert：同一个微信 openid 换登录别的账号时，把绑定覆盖到新账号。
-  if (preExisted || A.isAdmin(u)) {
-    await db.prepare("INSERT INTO jj_wx_bindings(openid,user_id,created_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), created_at=VALUES(created_at)")
-      .run(openid, u.id, Date.now());
-    await logOp(u.id, `${A.isAdmin(u) ? "管理员" : "已有员工"}账号自动绑定登录：${u.name}`);
-    return res.json({ status: "approved", token: A.signToken(u), user: await userPublicFull(u) });
-  }
-  const reqId = uid();
-  await db.prepare("INSERT INTO jj_join_requests(id,user_id,phone,name,method,status,created_at,openid) VALUES(?,?,?,?,?,?,?,?)")
-    .run(reqId, u.id, phoneT, String(name).trim(), "scan", "pending", Date.now(), openid);
-  res.json({ status: "pending", requestId: reqId });
-});
-
-router.get("/join/requests", A.authRequired, A.managerRequired, async (req, res) => {
-  const list = await db.prepare("SELECT * FROM jj_join_requests WHERE status = 'pending' ORDER BY created_at DESC").all();
-  res.json({ requests: list });
-});
-
-router.post("/join/requests/:id/approve", A.authRequired, A.managerRequired, async (req, res) => {
-  const r = await db.prepare("SELECT * FROM jj_join_requests WHERE id = ?").get(req.params.id);
-  if (!r) return res.status(404).json({ error: "申请不存在" });
-  if (r.status !== "pending") return res.status(400).json({ error: "已经处理过了" });
-  await db.prepare("INSERT INTO jj_wx_bindings(openid,user_id,created_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), created_at=VALUES(created_at)")
-    .run(r.openid, r.user_id, Date.now());
-  await db.prepare("UPDATE jj_join_requests SET status='approved', handled_at=?, handled_by=? WHERE id=?")
-    .run(Date.now(), req.user.id, r.id);
-  await logOp(req.user.id, `审批通过员工加入：${r.name}（${r.phone}）`);
-  res.json({ ok: true });
-});
-
-router.post("/join/requests/:id/reject", A.authRequired, A.managerRequired, async (req, res) => {
-  const r = await db.prepare("SELECT * FROM jj_join_requests WHERE id = ?").get(req.params.id);
-  if (!r) return res.status(404).json({ error: "申请不存在" });
-  if (r.status !== "pending") return res.status(400).json({ error: "已经处理过了" });
-  await db.prepare("UPDATE jj_join_requests SET status='rejected', handled_at=?, handled_by=? WHERE id=?")
-    .run(Date.now(), req.user.id, r.id);
-  await logOp(req.user.id, `拒绝员工加入申请：${r.name}（${r.phone}）`);
-  res.json({ ok: true });
 });
 
 /* ---------------- 员工管理 ---------------- */
@@ -360,7 +264,7 @@ router.delete("/styles/:id", A.authRequired, async (req, res) => {
  * 两种形态：
  *   1) 扫扎（主流程）：给 ticketNo 或 (orderId,bundleNo) + orderProcessId，
  *      不给 qty 就是"完成整扎剩余"。单价按该扎尺码/打点人岗位解析后存进记录快照。
- *   2) 自由打点（小程序端过渡期）：给 processId + qty，走老逻辑，单价留空由工资那边回落全局单价。
+ *   2) 自由打点（打点页手填）：给 processId + qty，单价留空由工资那边回落全局单价。
  */
 router.post("/scan", A.authRequired, async (req, res) => {
   const { ticketNo, orderId, bundleNo, orderProcessId, processId, styleId, userId } = req.body || {};
@@ -826,9 +730,8 @@ async function styleProcessList(styleId) {
 router.get("/styles/:id/processes", A.authRequired, async (req, res) => {
   res.json({ list: await styleProcessList(req.params.id) });
 });
-// 工序编辑器一次提交整套工序：先清空再重写。逐条 POST/PATCH/DELETE 在"改序号 + 改模式 +
+// 工序编辑器一次提交整套工序：先清空再重写。逐条增删改在"改序号 + 改模式 +
 // 删中间一条"混在一起时很难保证一致，整套覆盖简单且天然幂等。
-// 老的逐条接口保留给小程序端过渡期用，两边写的是同一张表。
 router.put("/styles/:id/processes", A.authRequired, async (req, res) => {
   const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
   if (!style) return res.status(404).json({ error: "款式不存在" });
@@ -864,34 +767,6 @@ router.put("/styles/:id/processes", A.authRequired, async (req, res) => {
   await logOp(req.user.id, `款式「${style.name}」保存工序：${items.length} 道`);
   res.json({ list: await styleProcessList(style.id) });
 });
-router.post("/styles/:id/processes", A.authRequired, async (req, res) => {
-  const style = await db.prepare("SELECT * FROM jj_styles WHERE id=? AND deleted=0").get(req.params.id);
-  if (!style) return res.status(404).json({ error: "款式不存在" });
-  const { processId, unitPrice } = req.body || {};
-  const proc = await db.prepare("SELECT * FROM jj_processes WHERE id=? AND deleted=0").get(processId);
-  if (!proc) return res.status(400).json({ error: "工序不存在" });
-  const maxSeq = (await db.prepare("SELECT COALESCE(MAX(seq),0) AS m FROM jj_style_processes WHERE style_id=?").get(style.id)).m;
-  const id = uid();
-  await db.prepare("INSERT INTO jj_style_processes(id,style_id,process_id,seq,unit_price,created_at) VALUES(?,?,?,?,?,?)")
-    .run(id, style.id, processId, maxSeq + 1, unitPrice !== undefined && unitPrice !== "" ? Number(unitPrice) : null, Date.now());
-  await logOp(req.user.id, `款式「${style.name}」新增工序：${proc.name}`);
-  res.json({ item: await db.prepare("SELECT * FROM jj_style_processes WHERE id=?").get(id) });
-});
-router.patch("/style-processes/:id", A.authRequired, async (req, res) => {
-  const sp = await db.prepare("SELECT * FROM jj_style_processes WHERE id=?").get(req.params.id);
-  if (!sp) return res.status(404).json({ error: "记录不存在" });
-  const { unitPrice, seq } = req.body || {};
-  if (unitPrice !== undefined) await db.prepare("UPDATE jj_style_processes SET unit_price=? WHERE id=?").run(unitPrice === "" || unitPrice === null ? null : Number(unitPrice), sp.id);
-  if (seq !== undefined) await db.prepare("UPDATE jj_style_processes SET seq=? WHERE id=?").run(Number(seq), sp.id);
-  res.json({ item: await db.prepare("SELECT * FROM jj_style_processes WHERE id=?").get(sp.id) });
-});
-router.delete("/style-processes/:id", A.authRequired, async (req, res) => {
-  const sp = await db.prepare("SELECT * FROM jj_style_processes WHERE id=?").get(req.params.id);
-  if (!sp) return res.status(404).json({ error: "记录不存在" });
-  await db.prepare("DELETE FROM jj_style_processes WHERE id=?").run(sp.id);
-  res.json({ ok: true });
-});
-
 /* ---------------- 日工资基数 ----------------
  * 工价按"一个工人一天挣多少"倒推：工价 = 日工资基数 ÷ 日定额。
  * 行情会变（涨工资、换季），所以做成可改的设置，不写死在代码里。

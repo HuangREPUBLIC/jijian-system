@@ -9,7 +9,7 @@ app.use(express.json({ limit: "8mb" })); // 款式图片以 base64 存库，放�
 app.use("/api", api);
 app.use("/uploads", express.static(UPLOAD_DIR, { maxAge: "7d" }));
 
-// 前端静态资源（手机网页版 / PWA，挂法跟「跟单系统」一致）
+// 前端静态资源（PWA，挂法跟「跟单系统」一致）
 const PUBLIC = path.join(__dirname, "..", "public");
 // Service Worker 和 manifest 不能被缓存，否则前端更新推不下去
 app.get(["/sw.js", "/manifest.webmanifest"], (req, res, next) => {

@@ -1,9 +1,8 @@
 "use strict";
 /**
- * 计件跟踪系统 — 手机网页版（可添加到主屏当 App 用的 PWA）。
+ * 计件跟踪系统 — 前端（手机/电脑浏览器通用，可添加到主屏当 App 用的 PWA）。
  *
- * 功能照搬原来的微信小程序（miniprogram/pages/*）：工作台、工序模板、款式管理、打点、
- * 考勤录入、效率看板、生产管理、扫菲记录、我的，
+ * 功能：工作台、工序模板、款式管理、打点、考勤录入、效率看板、生产管理、扫菲记录、我的，
  * 「员工管理（员工列表 + 新增员工）」集中到独立的「管理」页面（仅管理员/主管可见，
  * 跟「跟单系统」的管理后台一个做法）；薪资管理是工作台上单独的一个入口，同样只有管理员/主管看得到。
  * 登录方式跟「跟单系统」一致：手机号 + 密码，账号只能由管理员在管理页面创建，员工不能自助注册。
@@ -142,7 +141,7 @@ const APP_LOGO = `
   <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <defs>
       <linearGradient id="lg-bg" x1="60" y1="30" x2="440" y2="490" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#1E63AE"/><stop offset=".55" stop-color="#153F72"/><stop offset="1" stop-color="#0E2F58"/>
+        <stop stop-color="#8E63E6"/><stop offset=".55" stop-color="#6A3FC1"/><stop offset="1" stop-color="#422384"/>
       </linearGradient>
       <linearGradient id="lg-gloss" x1="90" y1="60" x2="300" y2="300" gradientUnits="userSpaceOnUse">
         <stop stop-color="#FFFFFF" stop-opacity=".22"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
@@ -150,11 +149,13 @@ const APP_LOGO = `
     </defs>
     <rect width="512" height="512" rx="116" fill="url(#lg-bg)"/>
     <path d="M116 0h280a116 116 0 0 1 116 116v70C420 96 300 40 176 40 152 40 128 42 106 46A116 116 0 0 1 116 0Z" fill="url(#lg-gloss)"/>
-    <circle cx="256" cy="256" r="158" fill="#FFFFFF"/>
-    <path d="M177 264 L233 320 L339 203" stroke="#71A8DE" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M174 92H338A24 24 0 0 1 362 116V282H150V116A24 24 0 0 1 174 92Z" fill="#FFFFFF"/>
+    <rect x="202" y="133" width="108" height="108" rx="16" stroke="#6A3FC1" stroke-width="22"/>
+    <rect x="237" y="168" width="38" height="38" rx="6" fill="#6A3FC1"/>
+    <path d="M150 316H362V396A24 24 0 0 1 338 420H174A24 24 0 0 1 150 396Z" fill="#FFFFFF" transform="rotate(9 256 368)"/>
   </svg>`;
 
-// 工具格子图标：沿用小程序 utils/icons.js 那套线条图标，改成 currentColor 以便跟主题色走
+// 工具格子图标：统一的线条图标，用 currentColor 以便跟主题色走
 const ICONS = {
   employees: `<circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.8 3.1-6.5 7-6.5s7 2.7 7 6.5"/>`,
   processes: `<circle cx="5" cy="6" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.8 7.6l3.4 3M13.8 13.6l3.4 3"/>`,
@@ -365,7 +366,7 @@ async function loadView(v) {
     return;
   }
   if (v === "attendance") {
-    // 员工列表是 managerRequired 的（跟小程序一样）：普通员工调不动，把原因 toast 出来，
+    // 员工列表是 managerRequired 的：普通员工调不动，把原因 toast 出来，
     // 页面也别一直卡在"加载中…"
     try { state.users = (await api("GET", "/users")).users || []; }
     catch (e) { state.users = []; state.att.records = []; throw e; }
@@ -425,7 +426,7 @@ function normalizePhotos(v) {
   if (typeof v === "string" && v) return [v];
   return [];
 }
-// 小程序时期的款式图存的是微信云存储 fileID（cloud://...），网页打不开，只能提示一下
+// 历史数据里个别款式图地址不是浏览器能加载的格式（不是 data:/http(s):/站内路径），只显示占位
 const showable = u => /^(data:|https?:|\/)/.test(String(u || ""));
 function compressImage(file) {
   return new Promise((resolve) => {
@@ -453,7 +454,7 @@ function photoThumbs(urls, editable, ctx) {
     const gi = urls.filter(showable).indexOf(u);
     return `<div class="ph-thumb">${showable(u)
       ? `<img src="${esc(u)}" data-gallery="${g}" data-i="${gi < 0 ? 0 : gi}" onclick="A.lightboxFromEl(this)" alt="款式图">`
-      : `<div class="ph-na">旧版小程序图片<br>网页打不开</div>`}
+      : `<div class="ph-na">图片已失效<br>请重新上传</div>`}
       ${editable ? `<span class="ph-x" onclick="A.removeDraftPhoto('${ctx}',${i})">✕</span>` : ""}</div>`;
   }).join("");
 }
@@ -1515,7 +1516,7 @@ function vCutView() {
 /* ---------- 打印菲票 ----------
  * 份数 / 旋转180° / 逐个备注 / 公司名称 / 菲票备注 都是纯前端渲染参数，不进请求；
  * 只有扎号范围和任选扎号会传给后端（它要按范围取扎并生成二维码）。
- * 「打印机」这一项在网页端换成「纸张模板」——浏览器不能枚举/指定打印机，
+ * 没有「打印机」选项，换成「纸张模板」——浏览器不能枚举/指定打印机，
  * 打印机由系统打印对话框选，这是 Web 的硬限制，不是功能缺失。
  */
 const PRINT_TEMPLATES = [["label60x40", "标签 60×40mm"], ["label80x60", "标签 80×60mm"], ["a4grid", "A4 一页多张"]];

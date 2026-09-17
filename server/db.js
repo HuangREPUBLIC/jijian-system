@@ -1,14 +1,14 @@
 "use strict";
 /**
- * 数据层：微信云托管 Serverless MySQL（mysql2/promise 连接池，异步）。
+ * 数据层：MySQL（mysql2/promise 连接池，异步）。
  *
- * 连接信息全部走环境变量（在云托管「服务设置 → 环境变量」里配，CLI 的 --envParams 有 bug）：
+ * 连接信息全部走环境变量（服务器上写在 .env 里）：
  *   MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE
- *   也兼容云托管有时注入的 MYSQL_ADDRESS("host:port") / MYSQL_USERNAME。
+ *   也兼容 MYSQL_ADDRESS("host:port") / MYSQL_USERNAME 这种写法。
  * 本地测试用 MYSQL_* 指向一个本地实例，跑一份全新的库（表结构在这里建齐）。
  *
- * 历史：本项目原先用 node:sqlite（跟 daka-system 共用一个 sqlite 文件），云托管不支持
- * 持久化文件卷，sqlite 重部署即清空，故迁到云托管 MySQL。daka 员工一次性导入（daka_seed.json）。
+ * 历史：本项目原先用 node:sqlite（跟 daka-system 共用一个 sqlite 文件），后来迁到 MySQL。
+ * daka 员工一次性导入（daka_seed.json）。
  */
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
@@ -16,7 +16,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-// 款式图上传目录（云托管里是临时的；本地测试用 DATA_DIR）。DATA_DIR 不再放数据库，只放上传文件。
+// 款式图上传目录（本地测试用临时 DATA_DIR）。DATA_DIR 不再放数据库，只放上传文件。
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "..", "data");
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const UPLOAD_DIR = path.join(DATA_DIR, "jj_uploads");
@@ -25,7 +25,7 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 function parseConf() {
   let host = process.env.MYSQL_HOST;
   let port = process.env.MYSQL_PORT;
-  const addr = process.env.MYSQL_ADDRESS; // 云托管可能注入 "10.3.101.101:3306"
+  const addr = process.env.MYSQL_ADDRESS; // "10.3.101.101:3306" 这种 host:port 合在一起的写法
   if (addr && !host) {
     const [h, p] = String(addr).split(":");
     host = h; if (p && !port) port = p;
@@ -33,8 +33,7 @@ function parseConf() {
   let database = process.env.MYSQL_DATABASE || process.env.MYSQL_DB || "jijian";
   if (!/^[A-Za-z0-9_]+$/.test(database)) throw new Error("非法的数据库名：" + database);
   // 本机开发/测试走 unix socket（macOS 上的 MariaDB 给当前系统用户配的是 unix_socket 认证，
-  // 免密）。设了 MYSQL_SOCKET 就用 socket，host/port 忽略；云托管上不会设这个变量，
-  // 连接方式和以前完全一样。
+  // 免密）。设了 MYSQL_SOCKET 就用 socket，host/port 忽略；服务器上不设这个变量，走 host/port。
   const socketPath = process.env.MYSQL_SOCKET || null;
   return {
     host: host || "127.0.0.1",
@@ -111,27 +110,6 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS settings (
     \`key\` VARCHAR(191) PRIMARY KEY,
     value MEDIUMTEXT NOT NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-
-  `CREATE TABLE IF NOT EXISTS jj_wx_bindings (
-    openid VARCHAR(128) PRIMARY KEY,
-    user_id VARCHAR(64) NOT NULL,
-    created_at BIGINT NOT NULL,
-    KEY idx_jjwx_user (user_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-
-  `CREATE TABLE IF NOT EXISTS jj_join_requests (
-    id VARCHAR(64) PRIMARY KEY,
-    user_id VARCHAR(64) NOT NULL,
-    phone VARCHAR(32) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    method VARCHAR(32) NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    created_at BIGINT NOT NULL,
-    handled_at BIGINT,
-    handled_by VARCHAR(64),
-    openid VARCHAR(128),
-    KEY idx_jjjoin_status (status)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   `CREATE TABLE IF NOT EXISTS jj_processes (
@@ -319,13 +297,13 @@ const BOOTSTRAP_ADMINS = [
   { phone: "13920822110", name: "周彦民" },
   { phone: "13034394098", name: "张立娓" }
 ];
-// 种子/导入进来的账号统一给这个初始密码（网页版是手机号+密码登录，随机密码谁都不知道就登不进去）。
+// 种子/导入进来的账号统一给这个初始密码（系统是手机号+密码登录，随机密码谁都不知道就登不进去）。
 // 跟「跟单系统」后台新建账号的默认密码一个约定；员工首次登录后请管理员按需重置。
 const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "123456";
 const nameByPhone = Object.fromEntries(BOOTSTRAP_ADMINS.map((a) => [a.phone, a.name]));
 
 // 一次性导入 daka 生产服务器的在职员工 + 岗位（server/daka_seed.json，随部署包带上）。
-// 幂等：按手机号判重，已存在在职账号跳过，不覆盖后续在小程序里的改动。岗位保留 daka 原始 role
+// 幂等：按手机号判重，已存在在职账号跳过，不覆盖后续在系统里的改动。岗位保留 daka 原始 role
 // 键（否则导入的 users.role 找不到对应 label 会显示原始键）。测试环境（NODE_ENV=test）不导入。
 async function importDakaSeed() {
   const p = path.join(__dirname, "daka_seed.json");
@@ -378,8 +356,8 @@ async function seedAdmins() {
   }
 }
 
-// 一次性补救：小程序时期建的账号（含 daka 导入的、种子管理员）密码是随机生成、谁都不知道的，
-// 换成网页版的手机号+密码登录后就登不进去了。带 SEED_RESET_PASSWORDS=1 启动一次，
+// 一次性补救：早期建的账号（含 daka 导入的、种子管理员）密码是随机生成、谁都不知道的，
+// 用手机号+密码登录时就登不进去。带 SEED_RESET_PASSWORDS=1 启动一次，
 // 把库里所有在职账号的密码统一重置成初始密码，之后再正常启动即可（平时不要开着）。
 async function resetAllPasswords() {
   if (process.env.SEED_RESET_PASSWORDS !== "1") return;

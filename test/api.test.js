@@ -11,66 +11,29 @@ async function call(method, path, token, body) {
 }
 
 (async () => {
-  // 测试库是全新空库，先手动插一个管理员账号（跟 daka-system 一样直接建号，走 wx.login 假 openid 绑定登录）
+  // 测试库是全新空库，先手动插一个管理员账号（跟 daka-system 一样直接建号），再用手机号+密码登录
   const { db, uid } = require(require("path").join(__dirname, "..", "server", "db"));
   const A = require(require("path").join(__dirname, "..", "server", "auth"));
   const adminId = uid();
   await db.prepare("INSERT INTO users(id,name,phone,password_hash,role,deleted,created_at) VALUES(?,?,?,?,?,0,?)")
     .run(adminId, "老板", "13900000000", A.hashPassword("x"), "admin", Date.now());
-  await db.prepare("INSERT INTO jj_wx_bindings(openid,user_id,created_at) VALUES(?,?,?)")
-    .run("openid-admin", adminId, Date.now());
-
-  // 管理员用假 openid 登录
-  const admLogin = await call("POST", "/wx/login", null, { testOpenid: "openid-admin" });
-  ok(admLogin.status === 200 && admLogin.j.token && admLogin.j.user.role === "admin", "管理员用微信登录");
+  const admLogin = await call("POST", "/login", null, { phone: "13900000000", password: "x" });
+  ok(admLogin.status === 200 && admLogin.j.token && admLogin.j.user.role === "admin", "管理员用手机号密码登录");
   const aT = admLogin.j.token;
+  ok((await call("POST", "/login", null, { phone: "13900000000", password: "wrong" })).status === 400, "密码错误登录不了");
 
-  // 没配置 WX_APPID/SECRET 时，非测试 openid 走真实 code2Session 应该报 500（缺少配置）
-  const noConfig = await call("POST", "/wx/login", null, { code: "abc" });
-  ok(noConfig.status === 500, "未配置微信 AppID 时给出明确报错");
-
-  // 管理员换一台设备扫码加入：应该直接自动放行，不需要（也没法）等审批
-  const adminJoin = await call("POST", "/join/scan", null, { openid: "openid-admin-2nd-device", phone: "13900000000", name: "老板" });
-  ok(adminJoin.status === 200 && adminJoin.j.status === "approved" && adminJoin.j.token, "管理员换设备扫码直接自动放行");
-
-  // 新 openid 没绑定，返回 needJoin
-  const newOpen = await call("POST", "/wx/login", null, { testOpenid: "openid-new-guy" });
-  ok(newOpen.status === 200 && newOpen.j.needJoin === true, "陌生 openid 返回 needJoin");
-
-  // 扫码加入：新手机号，走审批
-  const join = await call("POST", "/join/scan", null, { openid: "openid-new-guy", phone: "13711112222", name: "李焕" });
-  ok(join.status === 200 && join.j.status === "pending", "扫码加入新员工进入待审批");
-
-  // 未审批前登录仍然 needJoin
-  const stillPending = await call("POST", "/wx/login", null, { testOpenid: "openid-new-guy" });
-  ok(stillPending.j.needJoin === true, "审批通过前仍然登录不了");
-
-  // 非管理员不能看审批列表
-  ok((await call("GET", "/join/requests", aT)).status === 200, "管理员能看待审批列表");
-
-  // 管理员审批通过
-  const appr = await call("POST", `/join/requests/${join.j.requestId}/approve`, aT);
-  ok(appr.status === 200, "管理员审批通过");
-
-  // 审批通过后重新登录成功
-  const afterApprove = await call("POST", "/wx/login", null, { testOpenid: "openid-new-guy" });
-  ok(afterApprove.status === 200 && afterApprove.j.token && afterApprove.j.user.name === "李焕", "审批后重新登录生效");
-
-  // 手动添加员工（管理员直接建号，不需要审批）
+  // 员工账号只能由管理员建：建好后用默认密码 123456 登录
+  const huanAdd = await call("POST", "/users", aT, { name: "李焕", phone: "13711112222", role: "worker" });
+  ok(huanAdd.status === 200 && huanAdd.j.user.name === "李焕", "管理员手动添加员工");
+  const huanLogin = await call("POST", "/login", null, { phone: "13711112222", password: "123456" });
+  ok(huanLogin.status === 200 && huanLogin.j.token && huanLogin.j.user.name === "李焕", "新员工用默认密码登录");
+  ok((await call("POST", "/users", aT, { name: "李焕2", phone: "13711112222" })).status === 400, "同一手机号不能重复建号");
   const manualAdd = await call("POST", "/users", aT, { name: "纪秀芝", phone: "13722223333", role: "worker" });
-  ok(manualAdd.status === 200 && manualAdd.j.user.name === "纪秀芝", "管理员手动添加员工不需要审批");
-
-  // 手动添加的员工后续扫码绑定同一手机号，直接命中已有账号（而不是新建一行）
-  const bindExisting = await call("POST", "/join/scan", null, { openid: "openid-jixiuzhi", phone: "13722223333", name: "纪秀芝" });
-  ok(bindExisting.status === 200, "已有账号也走扫码申请绑定");
-  const users1 = await call("GET", "/users", aT);
-  const jiCount = users1.j.users.filter(u => u.phone === "13722223333").length;
-  ok(jiCount === 1, "扫码绑定已有手机号不会重复建号");
+  ok(manualAdd.status === 200 && manualAdd.j.user.name === "纪秀芝", "管理员再添加一个员工");
 
   // 非管理员不能添加员工/管理工序款式
-  const wT = afterApprove.j.token; // 李焕，普通员工
+  const wT = huanLogin.j.token; // 李焕，普通员工
   ok((await call("POST", "/users", wT, { name: "x", phone: "13733334444" })).status === 403, "普通员工不能手动添加员工");
-  ok((await call("GET", "/join/requests", wT)).status === 403, "普通员工不能看审批列表");
 
   // 工序模板增删改
   const p1 = await call("POST", "/processes", aT, { name: "订立扣", unit: "个", stdQty: 1800, hourQuota: 225 });
@@ -94,18 +57,9 @@ async function call(method, path, token, body) {
   const sDel = await call("DELETE", `/styles/${s1.j.style.id}`, aT);
   ok(sDel.status === 200, "管理员删除款式");
 
-  // 拒绝申请
-  const join2 = await call("POST", "/join/scan", null, { openid: "openid-rejected", phone: "13744445555", name: "张三" });
-  const rej = await call("POST", `/join/requests/${join2.j.requestId}/reject`, aT);
-  ok(rej.status === 200, "管理员拒绝申请");
-  const afterReject = await call("POST", "/wx/login", null, { testOpenid: "openid-rejected" });
-  ok(afterReject.j.needJoin === true, "拒绝后仍然登录不了");
-  const reApprove = await call("POST", `/join/requests/${join2.j.requestId}/approve`, aT);
-  ok(reApprove.status === 400, "已处理过的申请不能重复审批");
-
   // 打点 + 考勤 + 完成百分比（用真实台账里李焕 6/1 那组数字做回归：
   // 1085/225 + 850/225 = 8.6 时效小时，出勤 8 小时，8.6/8 = 1.075）
-  const huanId = afterApprove.j.user.id; // 李焕
+  const huanId = huanLogin.j.user.id; // 李焕
   const proc2 = await call("POST", "/processes", aT, { name: "订立扣2", unit: "个", stdQty: 1800, hourQuota: 225 });
   ok(proc2.status === 200, "新增回归测试用的工序");
 
@@ -206,33 +160,11 @@ async function call(method, path, token, body) {
   ok(style3.status === 200 && style3.j.style.image === uploadJ.url && style3.j.style.size === "M", "新建款式带上图片/尺码/颜色/客户");
   ok((await call("POST", "/styles", aT, { name: "无款号", })).status === 400, "不填款号建不了款式");
 
-  const procForStyle = await call("POST", "/processes", aT, { name: "钉扣3", unit: "个", stdQty: 100, hourQuota: 10, unitPrice: 1.5 });
-  const spAdd = await call("POST", `/styles/${style3.j.style.id}/processes`, aT, { processId: procForStyle.j.process.id });
-  ok(spAdd.status === 200 && spAdd.j.item.unit_price === null, "款式关联工序，不填价格就是走模板默认价");
-  const spList1 = await call("GET", `/styles/${style3.j.style.id}/processes`, wT);
-  ok(spList1.status === 200 && spList1.j.list[0].effectivePrice === 1.5, "没单独设价时，有效单价 = 工序模板默认单价");
-
-  const spAddOverride = await call("POST", `/styles/${style3.j.style.id}/processes`, aT, { processId: procForStyle.j.process.id, unitPrice: 2.2 });
-  ok(spAddOverride.j.item.unit_price === 2.2, "带价格新增，单独覆盖成功");
-  ok((await call("POST", `/styles/${style2.j.style.id}/processes`, wT, { processId: procForStyle.j.process.id })).status === 200, "测试阶段普通员工也能给款式加工序");
-
-  const spList2 = await call("GET", `/styles/${style3.j.style.id}/processes`, aT);
-  ok(spList2.j.list.length === 2, "款式下有两条工序关联");
-  ok(spList2.j.list[1].seq === 2, "第二条序号是2（按添加顺序）");
-
-  const spPatch = await call("PATCH", `/style-processes/${spAdd.j.item.id}`, aT, { unitPrice: 1.8 });
-  ok(spPatch.j.item.unit_price === 1.8, "管理员修改某条关联的单独单价");
-
-  const spDel = await call("DELETE", `/style-processes/${spAddOverride.j.item.id}`, aT);
-  ok(spDel.status === 200, "管理员删除一条款式工序关联");
-  const spList3 = await call("GET", `/styles/${style3.j.style.id}/processes`, aT);
-  ok(spList3.j.list.length === 1, "删除后只剩一条关联");
-
   // 测试阶段权限：主管(技术主管 tech_lead)对 3 块受限区(员工管理/操作记录/薪资)有完全权限，普通员工没有
   await call("POST", "/users", aT, { name: "主管测试", phone: "13655556666", role: "tech_lead" });
-  const superJoin = await call("POST", "/join/scan", null, { openid: "openid-super", phone: "13655556666", name: "主管测试" });
-  ok(superJoin.status === 200 && superJoin.j.token, "主管账号扫码直接登录");
-  const supT = superJoin.j.token;
+  const superLogin = await call("POST", "/login", null, { phone: "13655556666", password: "123456" });
+  ok(superLogin.status === 200 && superLogin.j.token, "主管账号登录");
+  const supT = superLogin.j.token;
   ok((await call("GET", "/users", supT)).status === 200, "主管能进员工管理(受限区)");
   ok((await call("GET", "/operations", supT)).status === 200, "主管能看操作记录(受限区)");
   ok((await call("GET", "/payroll/summary?month=2026-06", supT)).status === 200, "主管能看全员薪资汇总(受限区)");
@@ -261,8 +193,7 @@ async function call(method, path, token, body) {
   // 岗位调整通知本人
   const roleChangeTarget = await call("POST", "/users", aT, { name: "岗位通知测试", phone: "13644445555", role: "worker" });
   await call("PATCH", `/users/${roleChangeTarget.j.user.id}`, aT, { role: "tech_lead" });
-  const targetJoin = await call("POST", "/join/scan", null, { openid: "openid-rolechange", phone: "13644445555", name: "岗位通知测试" });
-  const targetT = targetJoin.j.token;
+  const targetT = (await call("POST", "/login", null, { phone: "13644445555", password: "123456" })).j.token;
   const targetList = (await call("GET", "/notifications", targetT)).j.list;
   ok(targetList.some(n => n.text.includes("岗位")), "被调整岗位的员工本人收到了通知");
 

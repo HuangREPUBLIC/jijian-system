@@ -1,7 +1,7 @@
 {
   "name": "jijian-system",
   "version": "1.0.0",
-  "description": "计件跟踪系统 — 微信小程序后端，车间计件工人打点/工序/考勤/完成百分比，跟「跟单系统」共用员工账号",
+  "description": "计件跟踪系统 — 服装厂车间裁床编菲、扫菲打点、工序考勤、效率看板与计件工资，手机/电脑通用，跟「跟单系统」共用员工账号",
   "type": "commonjs",
   "main": "server/index.js",
   "scripts": {
