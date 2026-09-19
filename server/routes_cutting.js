@@ -1,13 +1,6 @@
 "use strict";
-/**
- * 裁床单 / 扎（菲票）/ 生产进度 / 生产管理 路由。
- *
- * 从 routes.js 拆出来：这块的表、聚合口径、事务自成一体，跟考勤/薪资/员工没有共享状态，
- * 放一起只会让 routes.js 涨到读不动。
- *
- * 进度不落表：某扎某工序完成多少一律从 jj_scan_records 聚合。打点记录是唯一真相，
- * 免得出现"进度表说做完了、工资表说没打点"这种对不上账的情况。
- */
+// 裁床单 / 扎（菲票）/ 生产进度路由，从 routes.js 拆出来（表和事务自成一体）。
+// 进度不落表：一律从 jj_scan_records 聚合，打点记录是唯一真相。
 const express = require("express");
 const { db, pool, uid } = require("./db");
 const A = require("./auth");
@@ -17,20 +10,17 @@ const { logOp } = require("./oplog");
 const { notifyManagers } = require("./notify");
 const { cnDayStr } = require("./daytime");
 const { qrSvg } = require("./qr");
+const { wrapAsync } = require("./async_router");
 
 const router = express.Router();
-// 跟 routes.js 一样包一层 async 异常捕获（express4 不会自动捕获 async handler 的 reject）
-for (const m of ["get", "post", "put", "patch", "delete"]) {
-  const orig = router[m].bind(router);
-  router[m] = (p, ...hs) => orig(p, ...hs.map((h) =>
-    (typeof h === "function" && h.length < 4)
-      ? function (req, res, next) { return Promise.resolve(h(req, res, next)).catch(next); }
-      : h));
-}
+wrapAsync(router, ["get", "post", "put", "patch", "delete"]);
 
 const esc0 = (v) => (v === null || v === undefined ? "" : String(v));
 const num0 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const jsonParse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
+// 裁床单 + 关联款式的常用列组合，多处 SELECT 复用
+const ORDER_WITH_STYLE_COLS = "o.*, s.name AS style_name, s.code AS style_code, COALESCE(s.thumb, s.image) AS style_image";
+const ORDER_JOIN_STYLE = "FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id";
 
 // 操作日志文案用："款号 床次N" 这种口径，跟旧版裁床单日志风格对齐
 async function styleLabelOf(styleId) {
@@ -69,10 +59,8 @@ function bundleDone(procIds, doneOfBundle) {
   if (!procIds.length) return 0;
   return Math.min(...procIds.map((pid) => (doneOfBundle && doneOfBundle[pid]) || 0));
 }
-// 某扎"做掉的工序件数"= Σ 各道工序完成件数（单道封顶在裁床件数，防止历史超额数据把进度顶过 100%）。
-// 进度条按它算：分母是 裁床件数 × 工序道数，也就是这一扎的总工作量。
-// 原来进度条用的是"整扎做完的工序道数 / 工序总数"——那是个台阶函数：一道工序做了 19/20 件
-// 也还是 0%，现场看不出在动，跟旁边的"已完成数"也对不上。
+// 某扎"做掉的工序件数"= Σ各工序完成件数（单道封顶在裁床件数）；进度条按它算，
+// 分母是 裁床件数×工序道数（这一扎的总工作量）
 function bundleWorkDone(procIds, doneOfBundle, qty) {
   return procIds.reduce((sum, pid) =>
     sum + Math.min((doneOfBundle && doneOfBundle[pid]) || 0, qty), 0);
@@ -81,9 +69,8 @@ function pct(done, total) { return total > 0 ? Math.round((done / total) * 100) 
 async function completedByOrder(orderId) {
   return (await completedByOrders([orderId]))[orderId] || 0;
 }
-// 批量版：列表页一次算很多单，逐单查会 N+1。
-// 一次把两个口径都算出来：completed = 全工序都过了的件数（能出货的），
-// workDone/workTotal = 工序件数，列表页的进度条走后者。
+// 批量版，避免列表页逐单查 N+1。completed=全工序都过了的件数（能出货），
+// workDone/workTotal=工序件数，列表进度条走后者
 async function progressByOrders(orderIds) {
   if (!orderIds.length) return {};
   const ph = orderIds.map(() => "?").join(",");
@@ -226,9 +213,9 @@ router.get("/cut-orders", A.authRequired, async (req, res) => {
     where.push("(s.code LIKE ? OR s.name LIKE ? OR o.bed_no = ? OR o.doc_no LIKE ?)");
     args.push(`%${kw}%`, `%${kw}%`, Number(kw) || -1, `%${kw}%`);
   }
-  const tail = `FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id WHERE ${where.join(" AND ")}`;
+  const tail = `${ORDER_JOIN_STYLE} WHERE ${where.join(" AND ")}`;
   const rows = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
+    `SELECT ${ORDER_WITH_STYLE_COLS}
      ${tail} ORDER BY o.cut_date DESC, o.created_at DESC LIMIT ${limit} OFFSET ${offset}`).all(...args);
   const total = (await db.prepare(`SELECT COUNT(*) c ${tail}`).get(...args)).c;
   const prog = await progressByOrders(rows.map((r) => r.id));
@@ -241,13 +228,12 @@ router.get("/cut-orders", A.authRequired, async (req, res) => {
 /* ---------------- 详情 ---------------- */
 router.get("/cut-orders/:id", A.authRequired, async (req, res) => {
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
-     FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+    `SELECT ${ORDER_WITH_STYLE_COLS}
+     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
   let processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
-  // 工价要不要隐藏是给"普通计件工看不看到单价"用的，必须在后端剥掉——前端隐藏字段只是不显示，
-  // 接口原文里还在，改个抓包就能看到，跟 show_price/visible_roles 这两列存在的意义相悖
+  // 工价隐藏必须在后端剥掉：前端隐藏只是不显示，抓包还能看到原文
   if (!A.isManager(req.user)) {
     processes = processes.map((p) => {
       if (p.show_price === 0 || !visibleTo(p, req.user.role)) {
@@ -350,17 +336,15 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
 /* ---------------- 生产进度：按扎 ---------------- */
 router.get("/cut-orders/:id/progress", A.authRequired, async (req, res) => {
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
-     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+    `SELECT ${ORDER_WITH_STYLE_COLS}
+     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
   const pm = await progressMap(order.id);
   const pids = processes.map((p) => p.id);
-  // 这一页上并排出现三个口径，含义各不相同，别互相顶替：
-  //   completed_qty / done   所有工序都过了的件数（能出货的件数）
-  //   percent                工序件数进度 = 做掉的工序件数 / 总工作量 —— 进度条走的是它
-  //   finished_procs         整扎做完的工序道数，"x/y 道"那个标签
+  // 三个口径含义不同：completed_qty=全工序都过的件数(能出货)；percent=工序件数进度(进度条用它)；
+  // finished_procs=整扎做完的工序道数("x/y 道"标签)
   let completed = 0, workDone = 0, workTotal = 0;
   const list = bundles.map((b) => {
     const per = pm[b.id] || {};
@@ -422,8 +406,8 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
   if (!bundle) return res.status(404).json({ error: "菲票不存在" });
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
-     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=?`).get(bundle.order_id);
+    `SELECT ${ORDER_WITH_STYLE_COLS}
+     ${ORDER_JOIN_STYLE} WHERE o.id=?`).get(bundle.order_id);
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
   const rows = await db.prepare(
     "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
@@ -444,16 +428,14 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
   });
 });
 
-/* ---------------- 按菲票号查扎（扫码打点用） ----------------
- * 工人手里只有票号（扫出来是 JJ:<菲票号>），不知道属于哪张单，所以要有这条按票号反查的路由。
- * 权限是 authRequired 而不是 managerRequired——这是工人自己要用的入口。
- */
+/* ---------------- 按菲票号查扎（扫码打点用） ---------------- */
+// 工人只有票号，不知道属于哪张单；authRequired（非 managerRequired）——工人自己要用
 router.get("/bundles/by-ticket/:ticketNo", A.authRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE ticket_no = ?").get(Number(req.params.ticketNo));
   if (!bundle) return res.status(404).json({ error: "找不到这张菲票" });
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
-     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(bundle.order_id);
+    `SELECT ${ORDER_WITH_STYLE_COLS}
+     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(bundle.order_id);
   if (!order) return res.status(400).json({ error: "这张菲票所属的裁床单已删除" });
   const processes = await db.prepare(
     "SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
@@ -471,9 +453,17 @@ router.get("/bundles/by-ticket/:ticketNo", A.authRequired, async (req, res) => {
   })) });
 });
 
+// 单头 total_bundles/total_qty 是冗余列，改/删扎后要重算，否则列表页的数跟明细对不上
+async function recalcOrderTotals(orderId) {
+  const agg = await db.prepare(
+    "SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM jj_cut_bundles WHERE order_id=?").get(orderId);
+  await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
+    .run(agg.n, agg.q, orderId);
+  return agg;
+}
+
 /* ---------------- 修改裁床件数 / 缸号 / 备注 ---------------- */
-// 改的是分母（这一扎裁了多少件），不碰打点记录（分子）。改到比已完成数还小会让进度
-// 变成"做了 12 件但只裁了 3 件"这种鬼数据，直接拒掉。
+// 改的是分母（裁了多少件），改到比已完成数还小会拒绝（避免"做了12件但只裁3件"）
 router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
   if (!bundle) return res.status(404).json({ error: "菲票不存在" });
@@ -494,12 +484,7 @@ router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res)
   if (!sets.length) return res.json({ bundle });
   args.push(bundle.id);
   await db.prepare(`UPDATE jj_cut_bundles SET ${sets.join(",")} WHERE id=?`).run(...args);
-
-  // 单头的总件数是冗余列，改了扎要跟着重算，否则列表页显示的总数会跟明细对不上
-  const agg = await db.prepare(
-    "SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM jj_cut_bundles WHERE order_id=?").get(bundle.order_id);
-  await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
-    .run(agg.n, agg.q, bundle.order_id);
+  await recalcOrderTotals(bundle.order_id);
 
   const fresh = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(bundle.id);
   if (req.body.qty !== undefined && Number(req.body.qty) !== bundle.qty) {
@@ -514,12 +499,8 @@ router.patch("/bundles/:id", A.authRequired, A.managerRequired, async (req, res)
   res.json({ bundle: fresh });
 });
 
-/* ---------------- 删除单独一扎（菲票） ----------------
- * 一张裁床单里排错了一扎、或者某个颜色/尺码根本不做了，需要能单独删掉那一扎，
- * 而不是把整张单删了重排。
- * 已经有人打过点的扎不让删——那等于把工人做过的活和对应的工资一起抹掉；
- * 真要删得先把那些打点记录处理掉，这个决定不该由一个删除按钮替人做。
- */
+/* ---------------- 删除单独一扎（菲票） ---------------- */
+// 已经打过点的扎不让删：那等于把工人做过的活和工资一起抹掉
 router.delete("/bundles/:id", A.authRequired, A.managerRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
   if (!bundle) return res.status(404).json({ error: "菲票不存在" });
@@ -534,12 +515,7 @@ router.delete("/bundles/:id", A.authRequired, A.managerRequired, async (req, res
 
   const order = await db.prepare("SELECT * FROM jj_cut_orders WHERE id=?").get(bundle.order_id);
   await db.prepare("DELETE FROM jj_cut_bundles WHERE id=?").run(bundle.id);
-
-  // 单头的总扎数/总件数是冗余列，删了扎要跟着重算，否则列表页的数跟明细对不上
-  const agg = await db.prepare(
-    "SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM jj_cut_bundles WHERE order_id=?").get(bundle.order_id);
-  await db.prepare("UPDATE jj_cut_orders SET total_bundles=?, total_qty=? WHERE id=?")
-    .run(agg.n, agg.q, bundle.order_id);
+  const agg = await recalcOrderTotals(bundle.order_id);
 
   if (order) {
     const label = `${await styleLabelOf(order.style_id)} · 床次${order.bed_no}`;
@@ -553,10 +529,7 @@ router.delete("/bundles/:id", A.authRequired, A.managerRequired, async (req, res
 });
 
 /* ---------------- 生产管理概览 ---------------- */
-// 日期必须按中国时区算，不能直接截 UTC 的 toISOString()——见 server/daytime.js 的注释。
-// 这里换成 cnDayStr 后，yesterday/month 分支的算法不用变：
-// cnDayStr(now - 86400000) 就是"中国时区的昨天"（固定偏移不受时区规则影响，减 24 小时
-// 等价于日历退一天），month 的 from 同理基于中国日期算。
+// 日期按中国时区算，见 server/daytime.js
 const dayStr = cnDayStr;
 router.get("/production/overview", A.authRequired, async (req, res) => {
   const range = req.query.range || "today";
@@ -589,7 +562,7 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
   if (to) { where.push("o.cut_date <= ?"); args.push(to); }
   if (kw) { where.push("(s.code LIKE ? OR s.name LIKE ?)"); args.push(`%${kw}%`, `%${kw}%`); }
   const rows = await db.prepare(`
-    SELECT o.style_id, s.name AS style_name, s.code AS style_code, s.image AS style_image,
+    SELECT o.style_id, s.name AS style_name, s.code AS style_code, COALESCE(s.thumb, s.image) AS style_image,
            COUNT(*) AS sheet_count, COALESCE(SUM(o.total_qty),0) AS total_qty
     FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id
     WHERE ${where.join(" AND ")} GROUP BY o.style_id ORDER BY total_qty DESC`).all(...args);
@@ -601,22 +574,17 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
   res.json({ list: rows.map((r) => Object.assign(r, { completed_qty: doneByStyle[r.style_id] || 0 })) });
 });
 
-/* ---------------- 打印数据 ----------------
- * 不做服务端直出打印页：本系统鉴权是 Authorization: Bearer（token 在 localStorage），
- * window.open 出来的新窗口带不上这个头，直出页面必然 401。所以这里只给数据 + 二维码，
- * 前端在 SPA 里渲染到 #print-root，@media print 只显示它，再 window.print()。
- * 份数/旋转180°/逐个备注 都是纯前端渲染参数，不进这个请求。
- */
+/* ---------------- 打印数据 ---------------- */
+// 不服务端直出打印页：鉴权是 Bearer token，window.open 新窗口带不上，会 401。
+// 这里只给数据+二维码，前端渲染到 #print-root 再 window.print()
 router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, async (req, res) => {
   const order = await db.prepare(
-    `SELECT o.*, s.name AS style_name, s.code AS style_code, s.image AS style_image
-     FROM jj_cut_orders o JOIN jj_styles s ON s.id=o.style_id WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+    `SELECT ${ORDER_WITH_STYLE_COLS}
+     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
 
   let bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
-  // picksRaw 有值但一个有效扎号都解析不出来（比如 ?picks=abc、picks=0,-1、用了中文逗号）时必须
-  // 400，不能悄悄掉进下面的 from/to 分支——那时 from/to 都是 undefined，会把整单的扎全部返回，
-  // 打印场景下就是多打印、贴错票。
+  // picks 给了但一个有效扎号都解不出来时必须 400，不能悄悄回退到 from/to（会打印整单、贴错票）
   const picksRaw = req.query.picks;
   const picks = String(picksRaw || "").split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
   if (picksRaw !== undefined && picksRaw !== "" && !picks.length) {
@@ -641,7 +609,4 @@ router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, asyn
   res.json({ order, processes, bundles: withQr });
 });
 
-module.exports = {
-  router, progressMap, bundleDone, bundleWorkDone, completedByOrder, completedByOrders, progressByOrders,
-  buildSummary, jsonParse, nextTicketRange
-};
+module.exports = { router, completedByOrder, progressByOrders, nextTicketRange };

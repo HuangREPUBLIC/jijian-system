@@ -119,9 +119,7 @@ async function call(method, p, token, body) {
   ok(tpls.j.list.some(t => t.name === "标准两道" && Array.isArray(t.items)), "模板列表带出 items 数组");
   ok((await call("DELETE", `/process-templates/${tpl.j.template.id}`, aT)).status === 200, "删除工序模板");
 
-  // —— 重号阻断：customNos 跟自动编号混用产生重号，路由层必须拦截 ——
-  // A 格自定义扎号固定为 1，B 格走自动编号也从 1 开始，两者撞在一起（跟纯函数层的
-  // duplicateBundleNos 测试同一个碰撞场景，这里验证的是 POST /cut-orders 这条接线本身）
+  // —— 重号阻断：自定义扎号与自动编号撞号，路由层必须拦截 ——
   const dupNoBody = {
     styleId, bedNo: 10, docNo: "dup-1", cutDate: "2026-09-09",
     colors: ["A", "B"], sizes: ["S"], startNo: 1, multiple: true,
@@ -219,9 +217,7 @@ async function call(method, p, token, body) {
   // 剪线 10/10、烫工 4/10 → 该扎"已完成数" = min(10,4) = 4
   ok(prog.j.bundles[0].done === 4, "每扎已完成数 = 各工序完成数的最小值");
   ok(prog.j.completed_qty === 4, "T12 裁床单已完成件数 = 各扎已完成数之和");
-  // 进度条口径 = 做掉的工序件数 / 总工作量：剪线 10 + 烫工 4 = 14 件，总量 10件 × 2道 = 20 → 70%。
-  // （老口径是"整扎做完的工序道数/总道数"= 50%，那是个台阶函数：烫工做到 9/10 件也还算 0 道，
-  // 现场看进度条不动。道数另外用 finished_procs 出，两个口径并存不互相顶替。）
+  // 进度 = 做掉的工序件数 / 总工作量：(10 + 4) / (10 件 × 2 道) = 70%
   ok(prog.j.bundles[0].percent === 70, "进度条 = 工序件数进度：(10+4)/(10×2) = 70%");
   ok(prog.j.bundles[0].finished_procs === 1, "两道工序只整扎做完一道");
   ok(prog.j.work_percent === 70, "整单工序件数进度同口径");
@@ -235,9 +231,7 @@ async function call(method, p, token, body) {
   const bd = await call("GET", `/bundles/${bundle1.id}`, aT);
   ok(bd.j.processes.length === 2 && bd.j.processes[1].remaining === 6, "生产进度详情：每道工序剩余件数");
 
-  // —— 打点记录：范围按岗位分，而且扫扎记录必须查得出来 ——
-  // 这里守的是一个真出过的 bug：/scan-all 原来用 `JOIN jj_processes` 内连接取工序名，
-  // 而扫扎记录的 process_id 指向 jj_style_processes，整批被过滤掉，页面永远空。
+  // —— 打点记录：范围按岗位分，扫扎记录必须查得出来（工序名要 LEFT JOIN 取） ——
   const slogA = await call("GET", "/scan-all?date=2026-09-09", aT);
   ok(slogA.status === 200 && slogA.j.scope === "all", "管理员看打点记录 = 全员范围");
   const mineRows = slogA.j.records.filter(r => r.user_id === wkId);
@@ -274,10 +268,7 @@ async function call(method, p, token, body) {
   ok(byStyle.status === 200 && byStyle.j.list.length >= 1, "按款看有数据");
   ok(byStyle.j.list[0].sheet_count >= 1 && byStyle.j.list[0].total_qty > 0, "按款看带出裁床单数与总件数");
 
-  // —— T13 代打点分岗单价：接线必须用被代打点人(actor)的岗位，不是操作者(管理员)的岗位 ——
-  // POST /scan 取价用的是 actor.role（被代打点那个人），不是 req.user.role（操作者）。
-  // 这个点极易写反：如果接错成 req.user.role，管理员代计件工打点时会取到管理员岗位（在
-  // prices 里没定义）回落默认价，而不是计件工岗位的专价——下面用价格差异把接线守住。
+  // —— T13 代打点分岗单价：取价用被代打点人的岗位，不是操作者的 ——
   const st3 = await call("POST", "/styles", aT, { name: "代打点测试款", code: "FC9999" });
   const sid3 = st3.j.style.id;
   await call("PUT", `/styles/${sid3}/processes`, aT, {
@@ -291,8 +282,7 @@ async function call(method, p, token, body) {
   const bundle3 = sd3.j.bundles[0], procRole = sd3.j.processes[0];
   ok(procRole.price_mode === "role", "分岗工序快照进裁床单");
 
-  // 管理员用自己的 token 调 /scan，但带上 userId=wkId（计件工，role=worker）代他打点：
-  // 单价必须是计件工岗位的专价(8元)，不能是管理员岗位/默认价(1元)
+  // 管理员代计件工打点：单价应是计件工专价 8 元，不是默认价 1 元
   const scan3 = await call("POST", "/scan", aT, {
     orderId: so3, bundleNo: bundle3.bundle_no, orderProcessId: procRole.id, qty: 5, date: "2026-09-09", userId: wkId
   });

@@ -1,15 +1,6 @@
 "use strict";
-/**
- * 数据层：MySQL（mysql2/promise 连接池，异步）。
- *
- * 连接信息全部走环境变量（服务器上写在 .env 里）：
- *   MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE
- *   也兼容 MYSQL_ADDRESS("host:port") / MYSQL_USERNAME 这种写法。
- * 本地测试用 MYSQL_* 指向一个本地实例，跑一份全新的库（表结构在这里建齐）。
- *
- * 历史：本项目原先用 node:sqlite（跟 daka-system 共用一个 sqlite 文件），后来迁到 MySQL。
- * daka 员工一次性导入（daka_seed.json）。
- */
+// 数据层：MySQL（mysql2/promise 连接池，异步）。连接信息全部走环境变量
+// （MYSQL_HOST/PORT/USER/PASSWORD/DATABASE，也兼容 MYSQL_ADDRESS/MYSQL_USERNAME）。
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
 const fs = require("fs");
@@ -63,11 +54,7 @@ const pool = mysql.createPool(Object.assign({
   enableKeepAlive: true
 }, netOrSocket));
 
-/**
- * 兼容层：保留原代码 `db.prepare(sql).get/all/run(...positionalArgs)` 的调用形状，
- * 只是全部返回 Promise（调用处加 await、handler 改 async 即可），SQL 里 `?` 占位跟
- * sqlite 一致。get 返回首行或 undefined，all 返回数组，run 返回 mysql2 结果对象。
- */
+// db.prepare(sql).get/all/run(...args)：get 首行或 undefined，all 数组，run 结果对象（都返回 Promise）
 const db = {
   prepare(sql) {
     return {
@@ -92,9 +79,8 @@ async function setSetting(key, value) {
   );
 }
 
-// 建表（sqlite → MySQL 语法差异已处理：TEXT主键→VARCHAR(限长)、REAL→DOUBLE(mysql2 才返回 number，
-// 用 DECIMAL 会返回字符串破坏计算)、INTEGER 毫秒时间戳→BIGINT、`WHERE deleted=0` 部分唯一索引 MySQL
-// 不支持，phone 唯一性改由应用层判重，考勤/薪资的复合唯一键改成真正的 UNIQUE KEY 以支持 upsert）。
+// 数值列用 DOUBLE 不用 DECIMAL：mysql2 对 DECIMAL 返回字符串，会破坏数值计算；
+// phone 唯一性由应用层判重（MySQL 不支持 WHERE deleted=0 的部分唯一索引）
 const DDL = [
   `CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(64) PRIMARY KEY,
@@ -289,22 +275,18 @@ const DDL = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
 ];
 
-// 内置引导管理员（手机号+真实姓名）：无 env 覆盖时始终确保这两位是管理员（缺则建、有则提升）。
-// 吴佳霖是账号主人、周彦民是 daka 里的原管理员——daka 导入后周彦民已是 admin，但吴佳霖不在 daka
-// 名单里，所以不能用"仅当零管理员才种子"的旧逻辑（会漏掉吴佳霖），改成始终 ensure，幂等。
+// 内置引导管理员：无 env 覆盖时始终确保这些人是管理员（缺则建、有则提升），幂等
 const BOOTSTRAP_ADMINS = [
   { phone: "15522417606", name: "吴佳霖" },
   { phone: "13920822110", name: "周彦民" },
   { phone: "13034394098", name: "张立娓" }
 ];
-// 种子/导入进来的账号统一给这个初始密码（系统是手机号+密码登录，随机密码谁都不知道就登不进去）。
-// 跟「跟单系统」后台新建账号的默认密码一个约定；员工首次登录后请管理员按需重置。
+// 种子/导入账号的初始密码（手机号+密码登录，随机密码就登不进去了）；员工可由管理员按需重置
 const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "123456";
 const nameByPhone = Object.fromEntries(BOOTSTRAP_ADMINS.map((a) => [a.phone, a.name]));
 
-// 一次性导入 daka 生产服务器的在职员工 + 岗位（server/daka_seed.json，随部署包带上）。
-// 幂等：按手机号判重，已存在在职账号跳过，不覆盖后续在系统里的改动。岗位保留 daka 原始 role
-// 键（否则导入的 users.role 找不到对应 label 会显示原始键）。测试环境（NODE_ENV=test）不导入。
+// 一次性导入 daka 在职员工+岗位（server/daka_seed.json）。幂等：按手机号判重，已存在的跳过；
+// 测试环境（NODE_ENV=test）不导入
 async function importDakaSeed() {
   const p = path.join(__dirname, "daka_seed.json");
   if (!fs.existsSync(p)) return;
@@ -356,19 +338,16 @@ async function seedAdmins() {
   }
 }
 
-// 一次性补救：早期建的账号（含 daka 导入的、种子管理员）密码是随机生成、谁都不知道的，
-// 用手机号+密码登录时就登不进去。带 SEED_RESET_PASSWORDS=1 启动一次，
-// 把库里所有在职账号的密码统一重置成初始密码，之后再正常启动即可（平时不要开着）。
+// 早期账号密码是随机生成、登不进去的补救：带 SEED_RESET_PASSWORDS=1 启动一次，
+// 把所有在职账号密码重置成初始密码（平时不要开着）
 async function resetAllPasswords() {
   if (process.env.SEED_RESET_PASSWORDS !== "1") return;
   const [r] = await pool.query("UPDATE users SET password_hash = ? WHERE deleted = 0", [bcrypt.hashSync(DEFAULT_PASSWORD, 10)]);
   console.log(`[seed] ⚠ 已把 ${r.affectedRows} 个在职账号的密码重置为初始密码 ${DEFAULT_PASSWORD}（SEED_RESET_PASSWORDS=1）`);
 }
 
-// 岗位兜底：仅当还完全没设置过 roles 时写入默认两个岗位（生产环境已由 daka 导入填过，这里通常跳过；
-// 测试环境不导入 daka，就靠这里种下技术主管/业务主管）。
-// 这个系统面向服装厂车间，岗位就这四个。admin/worker 两个键在代码里有特殊含义
-// （admin 是超级权限，worker 是默认新员工岗位），所以沿用这两个键、只改显示名。
+// 岗位兜底：还没设置过 roles 时写入默认岗位（生产环境由 daka 导入填过，测试环境靠这里）。
+// admin/worker 两个键有特殊含义（admin=超级权限，worker=默认新员工岗位），只改显示名
 const JJ_ROLES = [
   { k: "admin", label: "工厂管理员" },
   { k: "branch_lead", label: "分厂主管" },
@@ -479,11 +458,11 @@ async function init() {
     await pool.query("ALTER TABLE jj_scan_records ADD INDEX idx_jjscan_bundle (bundle_id, order_process_id)");
     console.log("[migrate] jj_scan_records 增加 idx_jjscan_bundle 索引");
   }
-  // 2j. 预先种下菲票号起始值：routes_cutting.js 的 nextTicketRange 用
-  // `SELECT ... FOR UPDATE` 锁 settings 里 jj_ticket_seq 这一行来取号，防止并发建单撞号；
-  // 但 FOR UPDATE 锁的是已存在的行，这行从未插入过时无行可锁，首次并发建单必然出问题。
-  // 用 INSERT IGNORE（不是 setSetting 的 ON DUPLICATE KEY UPDATE）：只在没有这行时插入一次，
-  // 幂等且不会在每次重启时把正在用的计数器冲回 36000。
+  // 2l. 款式封面缩略图：列表只要 360px 小图，原图（base64 一张两三百KB）只在编辑/点开大图时取
+  await addCol("jj_styles", "thumb", "thumb MEDIUMTEXT");
+
+  // 预种菲票号起始值：nextTicketRange 用 FOR UPDATE 锁这行取号，锁不了不存在的行；
+  // 用 INSERT IGNORE（不是 ON DUPLICATE KEY UPDATE）避免重启时把计数器冲回 36000
   await pool.query(
     "INSERT IGNORE INTO settings(`key`,value) VALUES(?,?)",
     ["jj_ticket_seq", JSON.stringify(36000)]
@@ -495,11 +474,7 @@ async function init() {
   await seedAdmins();
   // 5. 岗位兜底
   await seedRoles();
-  // 5b. 一次性把岗位换成本系统的四个（工厂管理员/分厂主管/计件工/临时工）。
-  // 库里原来那套是从跟单系统导员工时带过来的（业务员/下厂员/技术主管/业务主管），
-  // 对车间计件没有意义。只换"可选岗位列表"，**不动任何人已有的 users.role**——
-  // 谁是什么岗位由管理员在「管理」页自己改，代码不替他们决定。
-  // 判据是列表里有没有 branch_lead：有就说明已经换过了，不重复写。
+  // 5b. 岗位列表换成本系统的四个；只换列表，不动任何人已有的 users.role（判据：有没有 branch_lead）
   const curRoles = await getSetting("roles", []);
   if (!Array.isArray(curRoles) || !curRoles.some((r) => r && r.k === "branch_lead")) {
     await setSetting("roles", JJ_ROLES);

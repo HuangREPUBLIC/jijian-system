@@ -1,16 +1,6 @@
 "use strict";
-/**
- * 系统推送（Web Push）：App 没打开时也能弹手机系统通知。
- *
- * 这是"投递"这一层，只管怎么送达；"谁该收到"仍由 notify.js 里的
- * notifyManagers / notifyUsers 决定。以后要加企业微信/服务号通道，只改这个文件。
- *
- * 送达能力的边界（通道限制，不是代码能解决的）：
- *   - iOS：必须"添加到主屏幕"后从图标打开才收得到，Safari 普通标签页收不到
- *   - 微信内置浏览器：完全不支持
- *   - 国产安卓 ROM：支持程度参差，可能延迟或不送达
- * 所以页面内的红点/未读数轮询必须保留，推送是锦上添花不是替代品。
- */
+// 系统推送（Web Push）：只管怎么送达，谁该收到由 notify.js 决定。
+// 通道有限（iOS 需加到主屏，微信内不支持），所以页面红点轮询必须保留，推送只是锦上添花。
 const fs = require("fs");
 const path = require("path");
 const webpush = require("web-push");
@@ -76,12 +66,7 @@ async function sendOne(row, payload) {
   }
 }
 
-/**
- * 给若干用户的所有设备推送。
- * payload: { title, body, url, tag }
- *   url 用于点击通知后跳转；tag 相同的通知会互相覆盖而不是堆一屏。
- * 调用方不用 await：失败已在内部咽掉，不影响主流程。
- */
+// 推给这些用户的所有设备，payload = { title, body, url, tag }；失败在内部咽掉，调用方不用 await
 async function sendToUsers(userIds, payload) {
   try {
     const ids = [...new Set((userIds || []).filter(Boolean))];
@@ -93,4 +78,4 @@ async function sendToUsers(userIds, payload) {
   } catch (e) { console.error("[push] 发送失败", e); }
 }
 
-module.exports = { publicKey, saveSubscription, removeSubscription, subscriptionsOf, countOf, sendToUsers };
+module.exports = { publicKey, saveSubscription, removeSubscription, countOf, sendToUsers };

@@ -1,5 +1,5 @@
-// 版本号变了就会丢弃旧缓存。改动前端后 bump 这个数字。
-const CACHE = "jijian-v5";
+// 改了前端就把版本号 +1，旧缓存会被丢弃
+const CACHE = "jijian-v6";
 const SHELL = ["/", "/index.html", "/app.js", "/styles.css",
   "/jsQR.js", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
@@ -25,9 +25,7 @@ self.addEventListener("fetch", (e) => {
   );
 });
 
-/* ---------- 系统推送 ----------
- * App 没打开时也能弹手机系统通知。tag 相同的通知会互相覆盖而不是堆一屏：
- * 同一张裁床单连续改动只留最新一条，免得刷屏。 */
+/* ---------- 系统推送：tag 相同的通知互相覆盖，同一张单只留最新一条 ---------- */
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (err) {}
@@ -42,7 +40,7 @@ self.addEventListener("push", (e) => {
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const url = (e.notification.data && e.notification.data.url) || "/";
-  // 已经开着的窗口就直接跳过去并聚焦，没有再开新窗口
+  // 已开着的窗口直接跳转并聚焦，没有再新开
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
     for (const c of cs) if ("focus" in c) { c.navigate(url).catch(() => {}); return c.focus(); }
     return self.clients.openWindow(url);

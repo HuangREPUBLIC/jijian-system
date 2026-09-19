@@ -1,10 +1,6 @@
 "use strict";
-/**
- * 菲票二维码。生成内联 SVG 而不是 PNG dataURL：
- *   - 打印时矢量不糊，热敏标签机上小尺寸也扫得动
- *   - 直接塞进 HTML，不用额外的图片请求（PWA 离线也能打印）
- * 容错级别 M：菲票会被摸脏折皱，L 太脆；H 会让码变密、小标签上反而难扫。
- */
+// 菲票二维码：内联 SVG（矢量不糊，直接塞进 HTML，PWA 离线也能打印）。
+// 容错级别 M：菲票会被摸脏折皱，L 太脆，H 会让码变密、小标签难扫。
 const QRCode = require("qrcode");
 
 async function qrSvg(text) {

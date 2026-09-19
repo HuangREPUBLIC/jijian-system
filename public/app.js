@@ -1,17 +1,6 @@
 "use strict";
-/**
- * 计件跟踪系统 — 前端（手机/电脑浏览器通用，可添加到主屏当 App 用的 PWA）。
- *
- * 功能：工作台、工序模板、款式管理、打点、考勤录入、效率看板、生产管理、扫菲记录、我的，
- * 「员工管理（员工列表 + 新增员工）」集中到独立的「管理」页面（仅管理员/主管可见，
- * 跟「跟单系统」的管理后台一个做法）；薪资管理是工作台上单独的一个入口，同样只有管理员/主管看得到。
- * 登录方式跟「跟单系统」一致：手机号 + 密码，账号只能由管理员在管理页面创建，员工不能自助注册。
- * 登录状态不过期：token 存 localStorage，只有后端返回 401 或用户主动退出才会清掉。
- *
- * 写法跟「跟单系统」(daka-system/public/app.js) 保持一致：无构建步骤的原生 JS，
- * 全局 state 存数据，go(view,id) 切页，A.* 是所有 onclick 事件处理的命名空间，
- * v开头的函数返回一段 HTML 字符串。权限在服务端强制校验，这里只负责隐藏没权限的入口。
- */
+// 计件跟踪前端（无构建的原生 JS PWA）：state 存数据，go(view,id) 切页，A.* 是 onclick 处理，v* 函数返回 HTML。
+// 权限由服务端校验，这里只管隐藏入口；token 存 localStorage，只有 401 或主动退出才清掉。
 
 /* ================= 状态 ================= */
 const TOKEN_KEY = "jj_token";
@@ -44,7 +33,7 @@ let state = {
   pay: { month: monthStr(), list: null, mine: null, editing: "" },
   empKw: "", empPage: 1,
   pushOn: false,
-  notif: { unread: 0, list: null },
+  notif: { unread: 0, list: null, recent: null },   // list：通知页/铃铛面板；recent：首页"最近动态"
   // 尺码/颜色/客户三个选项控件各自的展开状态与搜索词。桌面端展开是下拉面板，手机端是底部弹层。
   optUI: { size: { open: false, kw: "" }, color: { open: false, kw: "" }, customer: { open: false, kw: "" } },
   // 工序编辑器：款式表单里的「生产工序」段落和款式列表的「修改工序」页共用这份状态
@@ -85,48 +74,142 @@ function fmtMonth(v) {
   const m = String(v || "").match(/^(\d{4})-(\d{1,2})$/);
   return m ? `${m[1]}年${+m[2]}月` : (v || "");
 }
-// 通知时间：24小时内显示"刚刚/xx分钟前/xx小时前"，更早显示日期
+// 通知时间分级显示：刚刚 / x分钟前 / 今天 14:05 / 昨天 14:05 / 周三 14:05 / 今年 9月3日 / 往年 2025年9月3日
+const pad2 = n => String(n).padStart(2, "0");
+const dayStart = ms => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
 function fmtNotifTime(ms) {
-  const diff = Date.now() - ms;
+  const now = Date.now(), diff = now - ms;
+  const d = new Date(ms), hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   if (diff < 60000) return "刚刚";
   if (diff < 3600000) return Math.floor(diff / 60000) + "分钟前";
-  if (diff < 86400000) return Math.floor(diff / 3600000) + "小时前";
-  const d = new Date(ms), p = n => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const days = Math.round((dayStart(now) - dayStart(ms)) / 86400000);
+  if (days <= 0) return hm;
+  if (days === 1) return "昨天 " + hm;
+  if (days < 7) return "周" + "日一二三四五六"[d.getDay()] + " " + hm;
+  if (d.getFullYear() === new Date(now).getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
-// 通知条目：actorName/targetLabel/what 都在时用"头像+姓名+对象胶囊+改动说明"的卡片式展示；
-// 老通知(升级前生成的)这几列是 NULL，退回最初的纯文本单行展示，不强行拼凑。
-// 铃铛下拉/通知整页/首页"最近动态"预览三处共用同一套结构，desk=true 用更紧凑的字号。
-function notifItemHtml(n, desk) {
+// 通知条目：铃铛面板、通知页、首页"最近动态"共用；有结构化字段时显示"谁 + 对象 + 改了什么"，老通知退回纯文本
+function notifItemHtml(n, opt) {
+  const o = opt || {};
   const rich = !!(n.actorName && n.targetLabel && n.what);
-  const cls = `notif-item${desk ? " desk" : ""}${n.read ? "" : " unread"}`;
-  const initials = s => (s || "").length > 2 ? s.slice(-2) : (s || "");
-  return `<div class="${cls}" onclick="A.openNotif('${n.id}','${n.link || ""}')">
-    ${rich ? `<span class="avatar sm">${esc(initials(n.actorName))}</span>` : ""}
+  return `<div class="notif-item${o.desk ? " desk" : ""}${n.read ? "" : " unread"}" onclick="A.openNotif('${n.id}','${esc(n.link || "")}')">
+    ${rich ? `<span class="avatar sm">${esc(shortName(n.actorName))}</span>` : `<span class="avatar sm sys">${icon("bell")}</span>`}
     <div class="notif-main">${rich ? `
       <div class="notif-top"><span class="notif-actor">${esc(n.actorName)}</span><span class="tag">${esc(n.targetLabel)}</span></div>
       <div class="notif-what">${esc(n.what)}</div>` : `
       <div class="notif-plain">${esc(n.text)}</div>`}
       <div class="notif-time">${fmtNotifTime(n.createdAt)}</div>
-    </div></div>`;
+    </div>
+    ${o.del ? `<button class="notif-x" type="button" aria-label="删除这条通知"
+      onclick="event.stopPropagation();A.deleteNotif('${n.id}')">${icon("close")}</button>` : ""}
+  </div>`;
 }
 const num = n => Math.round(Number(n || 0) * 100) / 100;
 const pctText = p => (p === null || p === undefined) ? "" : Math.round(p * 1000) / 10 + "%";
-function toast(s, sticky) {
-  const m = $("msg"); m.textContent = s; m.classList.add("show");
+// 金额：千分位 + 固定两位小数（¥12,345.60）。工资单上 1234.5 和 12345 并排时，没有千分位一眼看不出差了十倍
+function money(n) {
+  const v = Math.round(Number(n || 0) * 100) / 100;
+  try { return "¥" + v.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  catch (e) { return "¥" + v.toFixed(2); }
+}
+// 提示条。带 action 时右边多一个按钮（撤销），停留时间拉长到 5 秒——跟 Gmail/微信删除后的"撤销"一个做法
+function toast(s, sticky, action) {
+  const m = $("msg");
+  m.textContent = "";
+  const t = document.createElement("span"); t.textContent = s; m.appendChild(t);
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "msg-act"; b.textContent = action.label;
+    b.onclick = () => { m.classList.remove("show"); clearTimeout(toast._t); action.fn(); };
+    m.appendChild(b);
+  }
+  m.classList.toggle("has-act", !!action);
+  m.classList.add("show");
   clearTimeout(toast._t);
-  if (!sticky) toast._t = setTimeout(() => m.classList.remove("show"), 2400);
+  if (!sticky) toast._t = setTimeout(() => m.classList.remove("show"), action ? 5000 : 2400);
+}
+// 触感反馈：扫到码、打点成功时轻震一下（只有安卓支持 Vibration API，iOS 上静默跳过）
+function buzz(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) { } }
+// 防重复提交：动作还在跑时再点直接忽略，按钮同时禁用转圈（车间手机卡顿时容易连点两次）
+const busyKeys = {};
+async function guard(key, fn) {
+  if (busyKeys[key]) return undefined;
+  busyKeys[key] = true;
+  const ev = window.event;
+  const btn = ev && ev.target && ev.target.closest ? ev.target.closest("button") : null;
+  if (btn) { btn.disabled = true; btn.classList.add("is-busy"); }
+  try { return await fn(); }
+  finally {
+    busyKeys[key] = false;
+    if (btn && btn.isConnected) { btn.disabled = false; btn.classList.remove("is-busy"); }
+  }
+}
+
+/* ---- 搜索：归一化（全角转半角/小写/压空格）+ 按空格分词都要命中 + 按相关度打分排序 ---- */
+function normText(s) {
+  return String(s == null ? "" : s)
+    .replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/　/g, " ").toLowerCase().replace(/\s+/g, " ").trim();
+}
+// fields[0] 是主字段（款号/扎号/姓名），命中它分更高。返回 -1 表示不匹配
+function matchScore(fields, q) {
+  const words = normText(q).split(" ").filter(Boolean);
+  if (!words.length) return 0;
+  const fs = fields.map(normText), all = fs.join(" ");
+  let score = 0;
+  for (const w of words) {
+    if (all.indexOf(w) < 0) return -1;
+    const main = fs[0] || "";
+    score += main === w ? 100 : main.indexOf(w) === 0 ? 60 : main.indexOf(w) >= 0 ? 35 : 10;
+  }
+  return score;
+}
+function rankFilter(list, q, fieldsOf) {
+  if (!normText(q)) return list;
+  return list.map((x, i) => ({ x, i, s: matchScore(fieldsOf(x), q) }))
+    .filter(r => r.s >= 0)
+    .sort((a, b) => b.s - a.s || a.i - b.i)      // 同分保持原顺序（稳定排序）
+    .map(r => r.x);
+}
+// 搜索结果里把命中的词标出来
+function hl(text, q) {
+  const raw = String(text == null ? "" : text);
+  const words = normText(q).split(" ").filter(Boolean);
+  if (!words.length) return esc(raw);
+  const norm = normText(raw);
+  // 归一化后长度不变（全角→半角一对一、只压了空格）时才能按下标回填；压过空格的就不标了，宁缺毋错
+  if (norm.length !== raw.length) return esc(raw);
+  const mark = new Array(raw.length).fill(false);
+  words.forEach(w => { let k = norm.indexOf(w); while (k >= 0) { for (let j = k; j < k + w.length; j++) mark[j] = true; k = norm.indexOf(w, k + w.length); } });
+  let out = "", open = false;
+  for (let i = 0; i < raw.length; i++) {
+    if (mark[i] && !open) { out += "<mark>"; open = true; }
+    if (!mark[i] && open) { out += "</mark>"; open = false; }
+    out += esc(raw[i]);
+  }
+  return out + (open ? "</mark>" : "");
+}
+// 中文输入法拼音还在组字时不要触发搜索重绘（重绘会把输入框换掉，拼了一半的字直接没了）
+const IME_ATTRS = `oncompositionstart="A._ime=true" oncompositionend="A._ime=false;this.dispatchEvent(new Event('input'))"`;
+
+/* ---- 加载中用骨架屏，空状态带图标和下一步提示 ---- */
+function skeletonHtml(rows, card) {
+  const n = rows || 3;
+  const inner = Array.from({ length: n }, () => `<div class="sk-row"><span class="sk sk-av"></span>
+    <span class="sk-lines"><span class="sk sk-l1"></span><span class="sk sk-l2"></span></span></div>`).join("");
+  return card === false ? inner : `<section class="group"><div class="card" aria-busy="true" aria-label="加载中">${inner}</div></section>`;
+}
+function emptyHtml(text, ic, actionHtml) {
+  return `<div class="empty">${ic ? `<span class="empty-ic">${icon(ic)}</span>` : ""}<div>${esc(text)}</div>${actionHtml || ""}</div>`;
 }
 const me = () => state.me;
-// 跟服务端 auth.js 的 isManager 保持一致：管理员 + 技术主管/业务主管才看得到
-// 「管理」页面（员工列表/新增员工）和「薪资管理」入口。
 // 跟 server/auth.js 的 SUPERVISOR_ROLES 保持一致：branch_lead 是本系统的分厂主管，
 // 后面几个是跟单系统导入员工时带来的老岗位键，留着不把已有的人踢出权限
 const SUPERVISOR_ROLES = ["branch_lead", "r1785125327446", "r1785125333976", "tech_lead", "biz_lead"];
-const isAdmin = () => !!me() && me().role === "admin";
+// 管理员 + 技术主管/业务主管才看得到「管理」页面和「薪资管理」入口，跟服务端 auth.js 的 isManager 保持一致
 const isManager = () => !!me() && (me().role === "admin" || SUPERVISOR_ROLES.indexOf(me().role) >= 0);
-// 跟单系统导员工时带过来的老岗位键。这些岗位在车间计件里没有意义，
-// 管理员应该把这些人改成本系统的四个岗位之一；在改之前，至少别在界面上显示原始键。
+// 跟单系统导员工时带过来的老岗位键，在改成本系统岗位之前，至少别在界面上显示原始键
 const LEGACY_ROLE_LABELS = {
   sales: "业务员（跟单系统）", follower: "下厂员（跟单系统）",
   tech_lead: "技术主管（跟单系统）", biz_lead: "业务主管（跟单系统）",
@@ -173,44 +256,85 @@ const ICONS = {
   bell: `<path d="M6 9.5a6 6 0 0 1 12 0c0 4 1.4 5.6 1.4 5.6H4.6S6 13.5 6 9.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/>`,
   trash: `<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5"/>`,
   plus: `<path d="M12 5v14M5 12h14"/>`,
+  close: `<path d="M6 6l12 12M18 6L6 18"/>`,
+  search: `<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>`,
+  camera: `<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.4-2h6.2l1.4 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.5"/>`,
+  image: `<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><circle cx="9" cy="10" r="1.7"/><path d="M4 17l4.8-4.6 3.4 3.2 2.6-2.4L20 17.6"/>`,
+  torch: `<path d="M8 3h8v4l-2 3v10h-4V10L8 7z"/><path d="M8 7h8"/>`,
+  inbox: `<path d="M4 13l2.2-7.2A1.5 1.5 0 0 1 7.6 4.7h8.8a1.5 1.5 0 0 1 1.4 1.1L20 13v5.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13h4.5l1 2h5l1-2H20"/>`,
+  check: `<path d="M5 12.5l4.5 4.5L19 7.5"/>`,
+  refresh: `<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4.5V8h-3.5"/>`,
 };
 const icon = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k]}</svg>`;
 
 /* ================= API ================= */
+// 断网 / 超时要给人话提示，不能落到"操作失败"：车间 Wi-Fi 时好时坏，工人得知道是网的问题、重试就行。
+// 超时按请求体大小放宽：带图保存款式动辄几 MB，弱网下 20 秒传不完。
 async function api(method, path, body) {
   const headers = {};
   if (state.token) headers.Authorization = "Bearer " + state.token;
   const opts = { method, headers };
   if (body !== undefined) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-  const r = await fetch("/api" + path, opts);
+  const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+  const big = opts.body && opts.body.length > 200 * 1024;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), big ? 120000 : 20000) : null;
+  if (ctrl) opts.signal = ctrl.signal;
+  let r;
+  try { r = await fetch("/api" + path, opts); }
+  catch (e) {
+    throw { error: e && e.name === "AbortError" ? "请求超时，请检查网络后重试" : "网络连接失败，请检查网络后重试", network: true };
+  } finally { if (timer) clearTimeout(timer); }
   if (r.status === 401 && state.token) { A.forceLogout(); throw { error: "登录已失效，请重新登录" }; }
   let j = null; try { j = await r.json(); } catch (e) { }
-  if (!r.ok) throw (j || { error: "请求失败" });
+  if (!r.ok) throw (j || { error: r.status >= 500 ? "服务器开小差了，请稍后再试" : "请求失败" });
   return j;
 }
-// 执行一个动作 → 重新拉当前页数据 → 重绘
-// 返回 fn() 的结果（成功）或 undefined（失败）：调用方需要知道操作是否成功时可以判断返回值，
-// 已有的 15 处调用都没接返回值，这个改动对它们是无害的。
+// 执行一个动作 → 重新拉当前页数据 → 重绘；返回 fn() 的结果（成功）或 undefined（失败并已 toast 提示）
 async function run(fn, okMsg) {
   try { const result = await fn(); await loadView(route.v); render(); if (okMsg) toast(okMsg); return result; }
   catch (e) { toast((e && e.error) || "操作失败"); return undefined; }
 }
 
-/* ---- 应用内通知：轮询未读数，桌面端铃铛红点 / 手机端"我的"页红点用 ---- */
-let notifTimer = null;
+/* ---- 通知未读数轮询：只更新红点不整页重绘（免得冲掉正在填的表单），后台暂停，失败退避 ---- */
+const POLL_MS = 15000;
+let notifTimer = null, pollFails = 0, polling = false;
+const badgeText = n => n > 99 ? "99+" : String(n);
+function badgeHtml(cls) {
+  const n = state.notif.unread;
+  return `<span class="${cls || "badge"}" data-badge="notif"${n ? "" : " hidden"}>${badgeText(n)}</span>`;
+}
+function updateBadges() {
+  const n = state.notif.unread;
+  document.querySelectorAll("[data-badge=notif]").forEach(el => { el.textContent = badgeText(n); el.hidden = !n; });
+}
 async function refreshNotifUnread() {
-  try {
-    const r = await api("GET", "/notifications/unread-count");
-    if (r.total !== state.notif.unread) { state.notif.unread = r.total; render(); }
-  } catch (e) { /* 网络抖动/未登录，静默跳过，下一轮再试 */ }
+  const r = await api("GET", "/notifications/unread-count");
+  const grew = r.total > state.notif.unread;
+  if (r.total === state.notif.unread) return;
+  state.notif.unread = r.total; updateBadges();
+  // 正看着通知列表时来了新消息，重新拉一次
+  if (grew && (route.v === "notifs" || notifPanelOpen)) A.loadNotifs();
+}
+function schedulePoll(ms) { clearTimeout(notifTimer); notifTimer = setTimeout(pollTick, ms); }
+async function pollTick() {
+  if (!polling || document.hidden) return;         // 后台不轮询，visibilitychange 回来时再续上
+  try { await refreshNotifUnread(); pollFails = 0; } catch (e) { pollFails++; }
+  schedulePoll(Math.min(120000, POLL_MS * Math.pow(2, pollFails)));
 }
 function startNotifPoll() {
-  if (notifTimer) return;
-  refreshNotifUnread();
-  notifTimer = setInterval(refreshNotifUnread, 10000);
+  if (polling) return;
+  polling = true; pollFails = 0; pollTick();
 }
-function stopNotifPoll() { clearInterval(notifTimer); notifTimer = null; }
+function stopNotifPoll() { polling = false; clearTimeout(notifTimer); notifTimer = null; }
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (state.scan.camOn) A.stopCamera(); return; }   // 切后台顺手关摄像头，别在兜里亮着
+  if (polling) { pollFails = 0; schedulePoll(0); }
+});
+
+// /style-options 接口拉回来的尺码/颜色/客户选项池，取值时兜底成空数组
+function setStyleOptions(o) { state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] }; }
+const getDailyWage = () => api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }));
 
 /* ================= 数据加载（每个页面各自拉自己要的接口） ================= */
 async function loadView(v) {
@@ -230,7 +354,7 @@ async function loadView(v) {
         todayQty: (scanAll.records || []).reduce((s, r) => s + Number(r.qty || 0), 0),
         monthWage: (paySummary.list || []).reduce((s, r) => s + Number(r.total || 0), 0)
       };
-      state.notif.list = (await api("GET", "/notifications").catch(() => ({ list: [] }))).list || [];
+      state.notif.recent = (await api("GET", "/notifications?limit=5").catch(() => ({ list: [] }))).list || [];
     } else {
       // 普通员工看自己的：本月完成度(打卡时长/出勤时长)、本月预估工资
       const [eff, pay] = await Promise.all([
@@ -255,7 +379,7 @@ async function loadView(v) {
     const [t, roleRes, w] = await Promise.all([
       api("GET", "/process-templates"),
       api("GET", "/roles").catch(() => ({ roles: [] })),  // 普通员工取不到岗位列表就留空，不阻塞页面
-      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
+      getDailyWage()
     ]);
     state.tplList = t.list || [];
     state.dailyWage = w.value || 100;
@@ -265,11 +389,12 @@ async function loadView(v) {
   if (v === "styles") {
     const [s, o, p, w] = await Promise.all([
       api("GET", "/styles"), api("GET", "/style-options").catch(() => ({})), api("GET", "/processes"),
-      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
+      getDailyWage()
     ]);
     state.dailyWage = w.value || 100;
     state.styles = s.styles || []; state.processes = p.processes || [];
-    state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    setStyleOptions(o);
+    backfillThumbs();
     return;
   }
   if (v === "mine") { await A.refreshPushState(); }
@@ -279,7 +404,7 @@ async function loadView(v) {
       api("GET", "/style-options").catch(() => ({}))
     ]);
     state.styles = s2.styles || [];
-    state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+    setStyleOptions(o);
     const st = state.styles.find((x) => x.id === route.id);
     // 换了款式就重建表单；同一个款式来回进出保留用户填了一半的内容
     if (!state.cf || state.cf.styleId !== route.id) {
@@ -349,7 +474,7 @@ async function loadView(v) {
     const [r, roleRes, w] = await Promise.all([
       api("GET", `/styles/${route.id}/processes`),
       api("GET", "/roles").catch(() => ({ roles: [] })),  // 普通员工没有管理权限，取不到岗位列表就留空，不阻塞页面
-      api("GET", "/settings/daily-wage").catch(() => ({ value: 100 }))
+      getDailyWage()
     ]);
     state.dailyWage = w.value || 100;
     const style = (state.styles || []).find((s) => s.id === route.id) || {};
@@ -409,147 +534,616 @@ async function loadView(v) {
   }
 }
 
-/* ================= 图片：压缩 / 选择器 / 缩略图 / 大图查看 =================
-   交互跟「跟单系统」完全一致：拍照 / 相册两个独立入口、缩略图点开大图查看器。
-   区别只在存储：jijian 的款式图直接以 base64 data URI 存在 jj_styles.image/images 字段里，
-   不走 /uploads 静态文件。所以压缩比 gendan 更狠一点（长边 1400 / 质量 0.78），
-   并且限制单个款式所有图片加起来不超过 5MB（服务端 express.json 上限是 8MB）。 */
-let photoDraft = {};            // { 上下文key: [dataURI,...] } 表单里正在编辑的照片
-let lightbox = null;            // 大图查看器状态
-let galleryReg = {};            // 缩略图分组注册表：base64 很长，不能直接塞进 data-gallery 属性
-let galleryN = 0;
-function regGallery(urls) { const k = "g" + (++galleryN); galleryReg[k] = urls; return k; }
-const IMG_LIMIT = 5 * 1024 * 1024;
+/* ================= 图片：选择 / 压缩 / 缩略图 / 大图查看 ================= */
+// 款式图 base64 存库，另存 360px 缩略图给列表用。压缩逐张排队（防老安卓内存不够），
+// 不会按 EXIF 摆正的老 WebView 手动转正，透明 PNG 先铺白底。
+const PHOTO_MAX = 9;                    // 一个款式最多 9 张（跟微信发图一样）
+const PHOTO_EDGE = 1600;                // 原图最长边
+const PHOTO_TARGET = 380 * 1024;        // 单张原图目标体积
+const THUMB_EDGE = 360;                 // 缩略图最长边（卡片上 84px × 3 倍屏 ≈ 252px，留点余量）
+const IMG_LIMIT = 6 * 1024 * 1024;      // 一个款式所有原图 data URI 总长上限（服务端 JSON 上限 8MB）
+const CANVAS_MAX_AREA = 16 * 1000 * 1000;
+const HEIC_MSG = "这张是 HEIC 格式，当前浏览器打不开。iPhone 可在「设置 › 相机 › 格式」选「兼容性最佳」，或截个图再传";
+let photoDraft = {};            // { 上下文key: [{ key, src, data, status, file, err }] } 表单里正在编辑的照片
+let photoSeq = 0;
+let lightbox = null;            // 大图查看器状态 { photos:[{src,thumb}], i, ctx?, styleId?, loading? }
 
+// 历史数据里个别款式图地址不是浏览器能加载的格式（不是 data:/http(s):/站内路径），只显示占位
+const showable = u => /^(data:|https?:|\/|blob:)/.test(String(u || ""));
 function normalizePhotos(v) {
   if (Array.isArray(v)) return v.filter(x => typeof x === "string" && x);
   if (typeof v === "string" && v) return [v];
   return [];
 }
-// 历史数据里个别款式图地址不是浏览器能加载的格式（不是 data:/http(s):/站内路径），只显示占位
-const showable = u => /^(data:|https?:|\/)/.test(String(u || ""));
-function compressImage(file) {
-  return new Promise((resolve) => {
-    if (!file || !/^image\//.test(file.type)) return resolve(null);
-    const rd = new FileReader();
-    rd.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const max = 1400, scale = Math.min(1, max / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
-        const c = document.createElement("canvas"); c.width = w; c.height = h;
-        c.getContext("2d").drawImage(img, 0, 0, w, h);
-        try { resolve(c.toDataURL("image/jpeg", 0.78)); } catch (e) { resolve(rd.result); }
-      };
-      img.onerror = () => resolve(null);
-      img.src = rd.result;
-    };
-    rd.onerror = () => resolve(null);
-    rd.readAsDataURL(file);
+const photoItem = url => ({ key: "p" + (++photoSeq), src: url, data: url, status: "ready" });
+const draftReady = ctx => (photoDraft[ctx] || []).filter(p => p.status === "ready");
+
+// 浏览器画 <img> 到 canvas 时会不会自动按 EXIF 摆正（Chrome 81+ / Safari 13.1+ / Firefox 77+ 会）
+const AUTO_ORIENT = (function () {
+  try { return !!(window.CSS && CSS.supports && CSS.supports("image-orientation", "from-image")); } catch (e) { return false; }
+})();
+function readHead(blob, n) {
+  const part = blob.slice(0, n);
+  if (part.arrayBuffer) return part.arrayBuffer();
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsArrayBuffer(part); });
+}
+// 读 JPEG 的 EXIF 方向（1~8），读不到一律当 1。EXIF 都在文件开头，只扫前 128KB
+async function exifOrientation(file) {
+  try {
+    const v = new DataView(await readHead(file, 128 * 1024));
+    if (v.getUint16(0) !== 0xFFD8) return 1;
+    let off = 2;
+    while (off + 4 <= v.byteLength) {
+      const marker = v.getUint16(off);
+      if ((marker & 0xFF00) !== 0xFF00) return 1;
+      if (marker === 0xFFE1 && v.getUint32(off + 4) === 0x45786966) {      // APP1 段，"Exif"
+        const tiff = off + 10, little = v.getUint16(tiff) === 0x4949;
+        const ifd = tiff + v.getUint32(tiff + 4, little);
+        const count = v.getUint16(ifd, little);
+        for (let i = 0; i < count; i++) {
+          const e = ifd + 2 + i * 12;
+          if (v.getUint16(e, little) === 0x0112) return v.getUint16(e + 8, little) || 1;
+        }
+        return 1;
+      }
+      off += 2 + v.getUint16(off + 2);
+    }
+  } catch (e) { }
+  return 1;
+}
+function loadImg(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("decode"));
+    img.src = src;
   });
 }
-function photoThumbs(urls, editable, ctx) {
-  const g = regGallery(urls.filter(showable));
-  return urls.map((u, i) => {
-    const gi = urls.filter(showable).indexOf(u);
-    return `<div class="ph-thumb">${showable(u)
-      ? `<img src="${esc(u)}" data-gallery="${g}" data-i="${gi < 0 ? 0 : gi}" onclick="A.lightboxFromEl(this)" alt="款式图">`
-      : `<div class="ph-na">图片已失效<br>请重新上传</div>`}
-      ${editable ? `<span class="ph-x" onclick="A.removeDraftPhoto('${ctx}',${i})">✕</span>` : ""}</div>`;
-  }).join("");
+function makeCanvas(w, h) { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; }
+// EXIF 方向 → 画布变换（w×h 是摆正后的输出尺寸）
+function orientTransform(ctx, o, w, h) {
+  const T = { 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, h], 4: [1, 0, 0, -1, 0, h],
+    5: [0, 1, 1, 0, 0, 0], 6: [0, 1, -1, 0, w, 0], 7: [0, -1, -1, 0, w, h], 8: [0, -1, 1, 0, 0, h] }[o];
+  if (T) ctx.transform(T[0], T[1], T[2], T[3], T[4], T[5]);
 }
+// 缩到最长边 maxEdge：先对半缩（每步 2 倍以内插值才不出锯齿/摩尔纹），最后一步带方向变换落到目标尺寸
+function drawScaled(img, maxEdge, orient) {
+  const sw = img.naturalWidth || img.width, sh = img.naturalHeight || img.height;
+  const rot = orient >= 5 && orient <= 8;
+  const ow = rot ? sh : sw, oh = rot ? sw : sh;                     // 摆正后的宽高
+  const k = Math.min(1, maxEdge / Math.max(ow, oh));
+  const tw = Math.max(1, Math.round(ow * k)), th = Math.max(1, Math.round(oh * k));
+  const dw = rot ? th : tw, dh = rot ? tw : th;                     // 在"未旋转"坐标系里要画的尺寸
+  let src = img, cw = sw, ch = sh;
+  while (cw > dw * 2 && ch > dh * 2) {
+    let nw = Math.round(cw / 2), nh = Math.round(ch / 2);
+    if (nw * nh > CANVAS_MAX_AREA) { const f = Math.sqrt(CANVAS_MAX_AREA / (cw * ch)); nw = Math.floor(cw * f); nh = Math.floor(ch * f); }
+    const c = makeCanvas(nw, nh), x = c.getContext("2d");
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.drawImage(src, 0, 0, nw, nh);
+    if (src !== img) src.width = src.height = 0;                     // 中间画布用完就释放，iOS 画布内存很紧
+    src = c; cw = nw; ch = nh;
+  }
+  const out = makeCanvas(tw, th), ctx = out.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, tw, th);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  orientTransform(ctx, orient, tw, th);
+  ctx.drawImage(src, 0, 0, dw, dh);
+  if (src !== img) src.width = src.height = 0;
+  return out;
+}
+function dataUrlToBlob(u) {
+  const parts = u.split(","), bin = atob(parts[1]), arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: (parts[0].match(/data:([^;]+)/) || [])[1] || "image/jpeg" });
+}
+function canvasToBlob(c, q) {
+  return new Promise((resolve) => {
+    if (c.toBlob) c.toBlob(b => resolve(b), "image/jpeg", q);
+    else resolve(dataUrlToBlob(c.toDataURL("image/jpeg", q)));
+  });
+}
+function blobToDataUrl(b) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });
+}
+// 先用 0.86 编一次，没超目标体积就用它；超了再二分找"不超标的最高质量"，最多再编 5 次
+async function encodeJpeg(c, target) {
+  const first = await canvasToBlob(c, 0.86);
+  if (!first) throw new Error("encode");
+  if (first.size <= target) return first;
+  let lo = 0.45, hi = 0.86, best = null;
+  for (let k = 0; k < 5; k++) {
+    const mid = (lo + hi) / 2, t = await canvasToBlob(c, mid);
+    if (t && t.size <= target) { best = t; lo = mid; } else hi = mid;
+  }
+  return best || (await canvasToBlob(c, 0.45)) || first;
+}
+async function compressPhoto(file) {
+  const heic = /hei[cf]/i.test(file.type || "") || /\.hei[cf]$/i.test(file.name || "");
+  if (file.type && !/^image\//.test(file.type)) throw { error: "不是图片文件", short: "不是图片" };
+  const url = URL.createObjectURL(file);
+  try {
+    let img;
+    try { img = await loadImg(url); }
+    catch (e) { throw { error: heic ? HEIC_MSG : "这张图片打不开，可能已损坏或格式不支持", short: heic ? "HEIC 格式" : "打不开" }; }
+    const orient = AUTO_ORIENT ? 1 : await exifOrientation(file);
+    const c = drawScaled(img, PHOTO_EDGE, orient);
+    const blob = await encodeJpeg(c, PHOTO_TARGET);
+    c.width = c.height = 0;
+    return await blobToDataUrl(blob);
+  } finally { URL.revokeObjectURL(url); }
+}
+// 缩略图：从原图再压一张小的（最长边 360，控制在 60KB 以内）
+async function makeThumb(src) {
+  const img = await loadImg(src);
+  const c = drawScaled(img, THUMB_EDGE, 1);
+  let q = 0.74, out = c.toDataURL("image/jpeg", q);
+  while (out.length > 60 * 1024 && q > 0.4) { q -= 0.12; out = c.toDataURL("image/jpeg", q); }
+  c.width = c.height = 0;
+  return out;
+}
+// 压缩排队：一次只处理一张，避免同时解码多张大图把内存吃爆
+let photoQueue = Promise.resolve();
+function queuePhoto(ctx, item) {
+  photoQueue = photoQueue.then(async () => {
+    if ((photoDraft[ctx] || []).indexOf(item) < 0) return;          // 排队期间被删掉了
+    try {
+      const data = await compressPhoto(item.file);
+      const used = draftReady(ctx).reduce((s, p) => s + p.data.length, 0);
+      if (used + data.length > IMG_LIMIT) throw { error: "图片总量超出上限，请删掉几张再加", short: "超出上限", fatal: true };
+      if (String(item.src).indexOf("blob:") === 0) URL.revokeObjectURL(item.src);
+      item.src = item.data = data; item.status = "ready"; item.file = null;
+    } catch (e) {
+      item.status = "error"; item.err = (e && e.short) || "处理失败";
+      if (e && e.fatal) item.file = null;
+      toast((e && e.error) || "图片处理失败");
+    }
+    refreshPicker(ctx);
+  });
+  return photoQueue;
+}
+function refreshPicker(ctx) { const el = $("pe-" + ctx); if (el) el.innerHTML = pickerInner(ctx); }
 // 拍照和相册拆成两个独立入口：部分手机(尤其华为)系统选择器在 <input multiple> 上会隐藏"拍照"选项
-// (一次拍照只能出一张图，跟多选语义冲突)，只拆开两个按钮才能保证两条路都能用
+// (一次拍照只能出一张图，跟多选语义冲突)，只拆开两个按钮才能保证两条路都能用。电脑上没有"拍照"这回事，只留一个。
 function pickerInner(ctx) {
   const list = photoDraft[ctx] || [];
-  return photoThumbs(list, true, ctx) +
-    `<label class="ph-add"><input type="file" accept="image/*" capture="environment" style="display:none" onchange="A.addDraftPhotos('${ctx}',this)">
-      <span class="ph-plus">📷</span><span>拍照</span></label>` +
-    `<label class="ph-add"><input type="file" accept="image/*" multiple style="display:none" onchange="A.addDraftPhotos('${ctx}',this)">
-      <span class="ph-plus">＋</span><span>相册</span></label>`;
+  const mobile = isMobileDevice();
+  const thumbs = list.map((p, i) => `<div class="ph-thumb is-${p.status}">
+      ${showable(p.src) ? `<img src="${esc(p.src)}" alt="款式图 ${i + 1}" decoding="async" onclick="A.viewDraft('${ctx}','${p.key}')">`
+        : p.status === "processing" ? `<div class="ph-na sk"></div>` : `<div class="ph-na">图片已失效<br>请重新上传</div>`}
+      ${i === 0 && p.status === "ready" ? `<span class="ph-cover">封面</span>` : ""}
+      ${p.status === "processing" ? `<span class="ph-state" aria-label="处理中"><i class="spin"></i></span>` : ""}
+      ${p.status === "error" ? `<button type="button" class="ph-state err" ${p.file ? `onclick="A.retryPhoto('${ctx}','${p.key}')"` : "disabled"}>
+          <span>${esc(p.err || "失败")}</span>${p.file ? "<b>点击重试</b>" : ""}</button>` : ""}
+      <button type="button" class="ph-x" onclick="A.removeDraftPhoto('${ctx}','${p.key}')" aria-label="移除第 ${i + 1} 张">${icon("close")}</button>
+    </div>`).join("");
+  const adders = list.length >= PHOTO_MAX ? "" :
+    (mobile ? `<label class="ph-add"><input type="file" accept="image/*" capture="environment" hidden onchange="A.addDraftPhotos('${ctx}',this)">
+      ${icon("camera")}<span>拍照</span></label>` : "") +
+    `<label class="ph-add"><input type="file" accept="image/*" multiple hidden onchange="A.addDraftPhotos('${ctx}',this)">
+      ${icon("image")}<span>${mobile ? "相册" : "添加图片"}</span></label>`;
+  return thumbs + adders + `<div class="ph-hint">${list.length}/${PHOTO_MAX} 张 · 第一张是封面，点开大图可以换封面${mobile ? "" : " · 也可以把图片拖进来或直接粘贴"}</div>`;
 }
-function photoPicker(ctx) { return `<div class="photos-grid" id="pe-${ctx}">${pickerInner(ctx)}</div>`; }
-function photoGallery(urls) {
-  urls = normalizePhotos(urls);
-  if (!urls.length) return "";
-  return `<div class="photos-grid ro">${photoThumbs(urls, false)}</div>`;
+function photoPicker(ctx) { return `<div class="photos-grid editable" id="pe-${ctx}" data-ctx="${ctx}">${pickerInner(ctx)}</div>`; }
+function styleImages(s) {
+  let imgs = [];
+  try { imgs = s.images ? JSON.parse(s.images) : []; } catch (e) { imgs = []; }
+  if ((!imgs || !imgs.length) && s.image) imgs = [s.image];
+  return normalizePhotos(imgs);
 }
-// 给大图加双指缩放 + 拖动 + 双击（页面本身仍锁定缩放，这里单独放开）
-function attachLightboxGestures(img) {
-  let scale = 1, tx = 0, ty = 0, mode = null;
-  let startDist = 0, startScale = 1, startX = 0, startY = 0, startTx = 0, startTy = 0, lastTap = 0;
-  const apply = () => { img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; };
-  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-  img.addEventListener("touchstart", (e) => {
-    if (e.touches.length === 2) {
-      mode = "pinch"; startDist = dist(e.touches); startScale = scale; startTx = tx; startTy = ty; e.preventDefault();
-    } else if (e.touches.length === 1) {
-      const now = Date.now();
-      if (now - lastTap < 300) {              // 双击：放大 / 还原
-        if (scale > 1) { scale = 1; tx = 0; ty = 0; } else { scale = 2.5; }
-        apply(); e.preventDefault();
-      } else if (scale > 1) {                 // 放大后单指拖动
-        mode = "pan"; startX = e.touches[0].clientX; startY = e.touches[0].clientY; startTx = tx; startTy = ty;
-      }
-      lastTap = now;
+// 卡片上的款式缩略图：点开看大图（先用缩略图垫着，原图到了再换上）
+function styleThumbHtml(styleId, src, count, cls) {
+  return showable(src)
+    ? `<img class="${cls || "sc-thumb"}" src="${esc(src)}" alt="款式图" loading="lazy" decoding="async"
+        data-count="${Number(count) || 1}" onclick="event.stopPropagation();A.viewStyle('${styleId}',this)">`
+    : `<div class="${cls || "sc-thumb"} sc-noimg" aria-hidden="true">${icon("image")}</div>`;
+}
+// 点开大图时按款式取原图，留最近 8 个款的原图在内存里，来回看不重复下载
+const fullImgCache = new Map();
+function cacheFullImgs(id, imgs) {
+  fullImgCache.delete(id);
+  if (imgs) fullImgCache.set(id, imgs);
+  while (fullImgCache.size > 8) fullImgCache.delete(fullImgCache.keys().next().value);
+}
+// 老款式没有缩略图：列表拿到的是封面原图，趁空闲在后台压一张缩略图补上，以后列表就轻了
+const thumbTried = {};
+function backfillThumbs() {
+  const todo = (state.styles || []).filter(s => s.image && !s.has_thumb && showable(s.image) && !thumbTried[s.id]);
+  if (!todo.length) return;
+  todo.forEach(s => { thumbTried[s.id] = true; });
+  const idle = window.requestIdleCallback || (fn => setTimeout(fn, 800));
+  idle(async () => {
+    for (const s of todo) {
+      try {
+        const t = await makeThumb(s.image);
+        await api("PUT", `/styles/${s.id}/thumb`, { thumb: t });
+        s.image = t; s.has_thumb = true;
+      } catch (e) { }
+      await new Promise(r => setTimeout(r, 80));
     }
-  }, { passive: false });
-  img.addEventListener("touchmove", (e) => {
-    if (mode === "pinch" && e.touches.length === 2) {
-      scale = Math.min(5, Math.max(1, startScale * dist(e.touches) / startDist)); apply(); e.preventDefault();
-    } else if (mode === "pan" && e.touches.length === 1 && scale > 1) {
-      tx = startTx + (e.touches[0].clientX - startX); ty = startTy + (e.touches[0].clientY - startY); apply(); e.preventDefault();
-    }
-  }, { passive: false });
-  img.addEventListener("touchend", () => { if (scale <= 1) { scale = 1; tx = 0; ty = 0; apply(); } mode = null; });
+  });
+}
+
+/* ---- 大图查看器 ----
+ * 手势跟微信/系统相册一致：双指缩放、拖动带阻尼惯性、双击缩放、左右滑切图、下拉关闭；电脑上滚轮缩放、←→切图、Esc 关闭。
+ * 所有动画都从当前值+松手速度起步，用临界阻尼弹簧收尾，任何时候都能按住打断，不用等动画播完。 */
+const REDUCED_MOTION = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+// 越界阻尼：拉得越远跟得越少（iOS 橡皮筋的同一个公式）
+function rubber(over, dim) { return (over * dim * 0.55) / (dim + 0.55 * over); }
+// 按当前速度（px/s）"扔出去"最终会滑多远：跟系统滚动减速同一个指数衰减模型
+function project(v, d) { return (v / 1000) * d / (1 - d); }
+// 临界阻尼弹簧：每个通道 { from, to, v }，带初速度收敛到目标
+function spring(ch, onFrame, onDone, response) {
+  const keys = Object.keys(ch);
+  if (REDUCED_MOTION) { const o = {}; keys.forEach(k => { o[k] = ch[k].to; }); onFrame(o); if (onDone) onDone(); return () => { }; }
+  const w = 2 * Math.PI / (response || 0.38), t0 = performance.now();
+  const C = keys.map(k => { const c = ch[k], a0 = c.from - c.to; return { k, to: c.to, a: a0, b: (c.v || 0) + w * a0, eps: c.eps || 0.4 }; });
+  let raf = 0, stopped = false;
+  const frame = (now) => {
+    if (stopped) return;
+    const t = (now - t0) / 1000, e = Math.exp(-w * t), o = {};
+    let settled = true;
+    C.forEach(c => {
+      const x = c.to + (c.a + c.b * t) * e, v = (c.b - w * (c.a + c.b * t)) * e;
+      o[c.k] = x;
+      if (Math.abs(x - c.to) > c.eps || Math.abs(v) > c.eps * 20) settled = false;
+    });
+    if (settled || t > 2.5) { C.forEach(c => { o[c.k] = c.to; }); onFrame(o); if (onDone) onDone(); return; }
+    onFrame(o); raf = requestAnimationFrame(frame);
+  };
+  raf = requestAnimationFrame(frame);
+  return () => { stopped = true; cancelAnimationFrame(raf); };
+}
+
+const V = { el: null, stop: null, s: 1, tx: 0, ty: 0, page: 0, ptrs: new Map(), mode: null, st: null, mid: null,
+  hist: [], tapT: 0, tapX: 0, tapY: 0, tapTimer: 0, gap: 18 };
+function openViewer(photos, i, extra) {
+  if (!photos || !photos.length) return;
+  lightbox = Object.assign({ photos, i: Math.max(0, Math.min(i || 0, photos.length - 1)) }, extra || {});
+  renderLightbox();
+}
+function buildViewer() {
+  const el = document.createElement("div");
+  el.id = "lightbox"; el.className = "lightbox";
+  el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", "查看图片");
+  el.innerHTML = `<div class="lb-bg"></div>
+    <div class="lb-track">${[-1, 0, 1].map(k => `<div class="lb-slide" data-k="${k}">
+      <div class="lb-frame"><img class="lb-low" alt="" aria-hidden="true" draggable="false"><img class="lb-img" alt="" draggable="false"></div>
+      <i class="spin lb-spin" aria-hidden="true"></i>
+      <button type="button" class="lb-err">图片加载失败，点这里重试</button></div>`).join("")}</div>
+    <div class="lb-top"><span class="lb-count num"></span>
+      <button type="button" class="lb-btn lb-close" aria-label="关闭">${icon("close")}</button></div>
+    <button type="button" class="lb-nav prev" aria-label="上一张">‹</button>
+    <button type="button" class="lb-nav next" aria-label="下一张">›</button>
+    <div class="lb-bottom"><div class="lb-dots"></div><div class="lb-acts"></div></div>`;
+  document.body.appendChild(el);
+  V.el = el;
+  el.querySelector(".lb-close").onclick = () => A.closeLightbox();
+  el.querySelector(".lb-nav.prev").onclick = () => A.lbStep(-1);
+  el.querySelector(".lb-nav.next").onclick = () => A.lbStep(1);
+  el.querySelectorAll(".lb-err").forEach(b => {
+    b.onclick = () => {
+      const sl = b.closest(".lb-slide"), img = sl.querySelector(".lb-img"), u = img.getAttribute("src");
+      sl.classList.remove("err");
+      if (u) { img.removeAttribute("src"); sl.classList.add("loading"); img.src = u; }
+    };
+  });
+  el.addEventListener("pointerdown", lbDown);
+  el.addEventListener("pointermove", lbMove);
+  el.addEventListener("pointerup", lbUp);
+  el.addEventListener("pointercancel", lbUp);
+  el.addEventListener("wheel", lbWheel, { passive: false });
+  document.documentElement.classList.add("lb-lock");
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("in")));
+  return el;
 }
 function renderLightbox() {
   let el = $("lightbox");
-  if (!lightbox) { if (el) el.remove(); return; }
-  if (!el) { el = document.createElement("div"); el.id = "lightbox"; el.className = "lightbox"; document.body.appendChild(el); }
-  const { photos, i } = lightbox;
-  el.innerHTML = `<div class="lb-bar"><span class="lb-count num">${i + 1} / ${photos.length}</span>
-      <button class="lb-close" onclick="A.closeLightbox()">✕</button></div>
-    <img class="lb-img" src="${esc(photos[i])}" alt="照片">
-    ${photos.length > 1 ? `<button class="lb-nav prev" onclick="event.stopPropagation();A.lbStep(-1)">‹</button>
-      <button class="lb-nav next" onclick="event.stopPropagation();A.lbStep(1)">›</button>` : ""}`;
-  // 只有点黑色背景才关闭；点图片是为了缩放，不关
-  el.onclick = (e) => { if (e.target === el) A.closeLightbox(); };
-  const img = el.querySelector(".lb-img");
-  if (img) attachLightboxGestures(img);
+  if (!lightbox) {
+    if (el && !el._closing) {
+      el._closing = true; el.classList.add("out"); vStop();
+      setTimeout(() => { el.remove(); if (V.el === el) V.el = null; }, REDUCED_MOTION ? 0 : 200);
+    }
+    document.documentElement.classList.remove("lb-lock");
+    V.ptrs.clear(); clearTimeout(V.tapTimer);
+    syncOverlayHistory();
+    return;
+  }
+  if (!el || el._closing) { if (el) el.remove(); el = buildViewer(); }
+  layoutViewer();
+  syncOverlayHistory();
 }
+const vSize = () => ({ W: V.el.clientWidth || window.innerWidth, H: V.el.clientHeight || window.innerHeight });
+const curSlide = () => V.el.querySelector('.lb-slide[data-k="0"]');
+const curFrame = () => curSlide().querySelector(".lb-frame");
+function layoutViewer() {
+  const lb = lightbox, n = lb.photos.length, W = vSize().W;
+  vStop();
+  V.el.querySelectorAll(".lb-slide").forEach(sl => {
+    const k = +sl.dataset.k, idx = lb.i + k;
+    sl.style.transform = `translate3d(${k * (W + V.gap)}px,0,0)`;
+    fillSlide(sl, idx >= 0 && idx < n ? lb.photos[idx] : null);
+  });
+  V.s = 1; V.tx = 0; V.ty = 0; V.page = 0;
+  vApplyTrack(); vApplyImg(); vBg(1);
+  V.el.querySelector(".lb-count").textContent = n > 1 ? `${lb.i + 1} / ${n}` : "";
+  V.el.querySelector(".lb-dots").innerHTML = n > 1 && n <= 9 ? lb.photos.map((_, k) => `<i class="${k === lb.i ? "on" : ""}"></i>`).join("") : "";
+  V.el.querySelector(".lb-nav.prev").hidden = lb.i <= 0;
+  V.el.querySelector(".lb-nav.next").hidden = lb.i >= n - 1;
+  V.el.querySelector(".lb-acts").innerHTML = lb.ctx ? `
+    <button type="button" class="lb-act" ${lb.i === 0 ? "disabled" : ""} onclick="A.lbSetCover()">${lb.i === 0 ? "当前是封面" : "设为封面"}</button>
+    <button type="button" class="lb-act danger" onclick="A.lbDelete()">${icon("trash")}<span>删除</span></button>` : "";
+}
+function fillSlide(sl, ph) {
+  sl.hidden = !ph;
+  if (!ph) return;
+  const low = sl.querySelector(".lb-low"), img = sl.querySelector(".lb-img");
+  const setSrc = (el, u) => { if ((el.getAttribute("src") || "") !== (u || "")) { if (u) el.src = u; else el.removeAttribute("src"); } };
+  sl.classList.remove("err");
+  low.onload = () => fitFrame(sl);
+  low.hidden = !ph.thumb;
+  setSrc(low, ph.thumb || "");
+  if (ph.src) {
+    const ready = () => { sl.classList.remove("loading"); sl.classList.add("full"); fitFrame(sl); };
+    img.onload = ready;
+    img.onerror = () => { sl.classList.remove("loading"); sl.classList.add("err"); };
+    sl.classList.remove("full");
+    setSrc(img, ph.src);
+    if (img.complete && img.naturalWidth) ready(); else sl.classList.add("loading");
+  } else { img.removeAttribute("src"); sl.classList.remove("full"); sl.classList.add("loading"); }
+  fitFrame(sl);
+}
+// 让图片"刚好塞满屏幕"（contain），记下这个尺寸，缩放/拖动的边界都以它为准
+function fitFrame(sl) {
+  const img = sl.querySelector(".lb-img"), low = sl.querySelector(".lb-low"), frame = sl.querySelector(".lb-frame");
+  const src = img.getAttribute("src") && img.naturalWidth ? img : (low.getAttribute("src") && low.naturalWidth ? low : null);
+  const { W, H } = vSize();
+  let fw = Math.min(W, H) * 0.7, fh = fw;
+  if (src) { const k = Math.min(W / src.naturalWidth, H / src.naturalHeight); fw = src.naturalWidth * k; fh = src.naturalHeight * k; }
+  frame.style.width = fw + "px"; frame.style.height = fh + "px";
+  frame._fw = fw; frame._fh = fh;
+}
+function vApplyImg() { const f = curFrame(); if (f) f.style.transform = `translate3d(${V.tx}px,${V.ty}px,0) scale(${V.s})`; }
+function vApplyTrack() { V.el.querySelector(".lb-track").style.transform = `translate3d(${V.page}px,0,0)`; }
+function vBg(a) { V.el.querySelector(".lb-bg").style.opacity = Math.max(0, Math.min(1, a)); V.el.classList.toggle("dragging", a < 1); }
+function vBounds(s) {
+  const f = curFrame(), { W, H } = vSize();
+  return { x: Math.max(0, ((f._fw || W) * s - W) / 2), y: Math.max(0, ((f._fh || H) * s - H) / 2) };
+}
+function vClamp(s, tx, ty) { const b = vBounds(s); return { tx: Math.max(-b.x, Math.min(b.x, tx)), ty: Math.max(-b.y, Math.min(b.y, ty)) }; }
+function vStop() { if (V.stop) { V.stop(); V.stop = null; } }
+function vAnim(to, vel, done, resp) {
+  vStop();
+  const ch = {};
+  ["s", "tx", "ty", "page"].forEach(k => {
+    if (to[k] !== undefined) ch[k] = { from: V[k], to: to[k], v: (vel && vel[k]) || 0, eps: k === "s" ? 0.002 : 0.4 };
+  });
+  V.stop = spring(ch, o => { Object.assign(V, o); vApplyImg(); vApplyTrack(); }, () => { V.stop = null; if (done) done(); }, resp);
+}
+// 以屏幕上 (mx,my) 这一点为中心把缩放从 V.s 换到 s：保证手指/鼠标底下那一点不动
+function vZoomAt(s, mx, my) {
+  const { W, H } = vSize(), cx = W / 2, cy = H / 2;
+  const px = (mx - cx - V.tx) / V.s, py = (my - cy - V.ty) / V.s;
+  return { tx: mx - cx - s * px, ty: my - cy - s * py };
+}
+function vVelocity() {
+  const h = V.hist; if (h.length < 2) return { x: 0, y: 0 };
+  const a = h[0], b = h[h.length - 1], dt = b.t - a.t;
+  return dt < 8 ? { x: 0, y: 0 } : { x: (b.x - a.x) / dt * 1000, y: (b.y - a.y) / dt * 1000 };
+}
+function lbDown(e) {
+  if (!lightbox || e.target.closest("button")) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  try { V.el.setPointerCapture(e.pointerId); } catch (x) { }
+  vStop();
+  V.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (V.ptrs.size === 1) {
+    V.mode = "pending";
+    V.st = { x: e.clientX, y: e.clientY, s: V.s, tx: V.tx, ty: V.ty };
+    V.hist = [{ x: e.clientX, y: e.clientY, t: performance.now() }];
+  } else if (V.ptrs.size === 2) {
+    const pts = [...V.ptrs.values()], a = pts[0], b = pts[1];
+    if (V.page) { V.page = 0; vApplyTrack(); }
+    if (V.mode === "drop") { V.s = 1; V.tx = 0; V.ty = 0; vBg(1); }
+    V.mode = "pinch";
+    V.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    V.st = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: V.mid.x, my: V.mid.y, s: V.s, tx: V.tx, ty: V.ty };
+  }
+}
+function lbMove(e) {
+  if (!V.ptrs.has(e.pointerId) || !lightbox) return;
+  V.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const { W, H } = vSize(), cx = W / 2, cy = H / 2;
+  if (V.mode === "pinch") {
+    if (V.ptrs.size < 2) return;
+    const pts = [...V.ptrs.values()], a = pts[0], b = pts[1];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    let s = V.st.s * d / V.st.d;
+    if (s > 5) s = 5 + (s - 5) * 0.25; else if (s < 1) s = Math.max(0.5, 1 - (1 - s) * 0.5);    // 超出范围有阻尼
+    const px = (V.st.mx - cx - V.st.tx) / V.st.s, py = (V.st.my - cy - V.st.ty) / V.st.s;
+    V.s = s; V.tx = mx - cx - s * px; V.ty = my - cy - s * py; V.mid = { x: mx, y: my };
+    vApplyImg(); return;
+  }
+  const p = V.ptrs.get(e.pointerId), dx = p.x - V.st.x, dy = p.y - V.st.y, now = performance.now();
+  V.hist.push({ x: p.x, y: p.y, t: now });
+  while (V.hist.length > 2 && now - V.hist[0].t > 100) V.hist.shift();
+  if (V.mode === "pending") {
+    if (Math.hypot(dx, dy) < 8) return;                   // 8px 以内算手抖，不判方向
+    V.mode = V.s > 1.01 ? "pan" : Math.abs(dx) > Math.abs(dy) ? "page" : dy > 0 ? "drop" : "pan";
+  }
+  if (V.mode === "pan") {
+    const b = vBounds(V.s);
+    const soft = (v, lim, dim) => v > lim ? lim + rubber(v - lim, dim) : v < -lim ? -lim - rubber(-lim - v, dim) : v;
+    V.tx = soft(V.st.tx + dx, b.x, W); V.ty = soft(V.st.ty + dy, b.y, H); vApplyImg();
+  } else if (V.mode === "page") {
+    const n = lightbox.photos.length, i = lightbox.i;
+    let off = dx;
+    if ((i === 0 && off > 0) || (i === n - 1 && off < 0)) off = (off > 0 ? 1 : -1) * rubber(Math.abs(off), W);
+    V.page = off; vApplyTrack();
+  } else if (V.mode === "drop") {
+    const k = Math.max(0, Math.min(1, dy / H));
+    V.s = 1 - k * 0.35; V.tx = dx * 0.6; V.ty = dy > 0 ? dy : -rubber(-dy, H); vApplyImg(); vBg(1 - k * 1.6);
+  }
+}
+function lbUp(e) {
+  if (!V.ptrs.has(e.pointerId) || !lightbox) { V.ptrs.delete(e.pointerId); return; }
+  V.ptrs.delete(e.pointerId);
+  const { W, H } = vSize();
+  if (V.mode === "pinch") {
+    if (V.ptrs.size === 1) {                               // 抬起一根手指：剩下那根接着拖，不跳
+      const p = [...V.ptrs.values()][0];
+      V.mode = V.s > 1.01 ? "pan" : "pending";
+      V.st = { x: p.x, y: p.y, s: V.s, tx: V.tx, ty: V.ty };
+      V.hist = [{ x: p.x, y: p.y, t: performance.now() }];
+    } else if (!V.ptrs.size) {
+      V.mode = null;
+      const s = Math.max(1, Math.min(5, V.s));
+      const m = V.mid || { x: W / 2, y: H / 2 };
+      const t0 = s === V.s ? { tx: V.tx, ty: V.ty } : vZoomAt(s, m.x, m.y);
+      const t = s <= 1.001 ? { tx: 0, ty: 0 } : vClamp(s, t0.tx, t0.ty);
+      vAnim({ s, tx: t.tx, ty: t.ty }, null, null, 0.35);
+    }
+    return;
+  }
+  if (V.ptrs.size) return;
+  const mode = V.mode, v = vVelocity();
+  V.mode = null;
+  if (mode === "pending") { if (e.type === "pointerup") lbTap(e.clientX, e.clientY); return; }
+  if (mode === "pan") {
+    // 松手按速度预判最终停在哪（再夹回边界内），带着松手速度滑过去
+    const t = vClamp(V.s, V.tx + project(v.x, 0.998), V.ty + project(v.y, 0.998));
+    vAnim({ tx: t.tx, ty: t.ty }, { tx: v.x, ty: v.y }, null, 0.55);
+  } else if (mode === "page") {
+    const n = lightbox.photos.length, i = lightbox.i;
+    const land = V.page + project(v.x, 0.99);            // 轻轻一甩也能翻页，慢慢拖过一半也能翻页
+    const d = land < -W / 2 && i < n - 1 ? 1 : land > W / 2 && i > 0 ? -1 : 0;
+    vAnim({ page: -d * (W + V.gap) }, { page: v.x }, () => { if (d && lightbox) { lightbox.i += d; layoutViewer(); } }, 0.32);
+  } else if (mode === "drop") {
+    if (V.ty > H * 0.16 || v.y > 700) { vDismiss(v); return; }
+    vBg(1);
+    vAnim({ s: 1, tx: 0, ty: 0 }, { tx: v.x, ty: v.y }, null, 0.35);
+  }
+}
+function vDismiss(v) {
+  const { H } = vSize();
+  V.el.classList.add("out");
+  vAnim({ ty: V.ty + Math.max(H * 0.35, project(v ? v.y : 0, 0.99)), s: V.s * 0.9 }, { ty: v ? v.y : 0 }, null, 0.3);
+  setTimeout(() => A.closeLightbox(), 160);
+}
+// 单击关闭、双击放大/还原。单击要等 300ms 确认不是双击的第一下
+function lbTap(x, y) {
+  const now = performance.now();
+  if (now - V.tapT < 300 && Math.hypot(x - V.tapX, y - V.tapY) < 30) {
+    clearTimeout(V.tapTimer); V.tapT = 0;
+    if (V.s > 1.01) { vAnim({ s: 1, tx: 0, ty: 0 }, null, null, 0.35); return; }
+    const s = 2.5, t0 = vZoomAt(s, x, y), t = vClamp(s, t0.tx, t0.ty);
+    vAnim({ s, tx: t.tx, ty: t.ty }, null, null, 0.35);
+    return;
+  }
+  V.tapT = now; V.tapX = x; V.tapY = y;
+  clearTimeout(V.tapTimer);
+  V.tapTimer = setTimeout(() => { V.tapT = 0; if (lightbox) A.closeLightbox(); }, 300);
+}
+function lbWheel(e) {
+  if (!lightbox) return;
+  e.preventDefault(); vStop();
+  const s = Math.max(1, Math.min(5, V.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015))));
+  const t0 = vZoomAt(s, e.clientX, e.clientY), t = s <= 1.001 ? { tx: 0, ty: 0 } : vClamp(s, t0.tx, t0.ty);
+  V.s = s; V.tx = t.tx; V.ty = t.ty; vApplyImg();
+}
+window.addEventListener("resize", () => { if (lightbox && V.el && !V.el._closing) layoutViewer(); });
 
-/* ================= 弹窗 ================= */
+/* ================= 弹窗 =================
+ * 窄屏从底部升起（可拖拽关闭），宽屏居中对话框；Esc 关闭、回车=确定、安卓返回键关弹窗（见 syncOverlayHistory）。 */
+const isNarrow = () => !!(window.matchMedia && matchMedia("(max-width: 640px)").matches);
 function modal(opts) { modalState = opts; renderModal(); }
 function renderModal() {
   const mask = $("mask");
-  if (!modalState) { mask.classList.remove("show"); mask.innerHTML = ""; return; }
+  if (!modalState) {
+    if (mask.classList.contains("show") && !mask.classList.contains("closing")) {
+      mask.classList.add("closing");
+      clearTimeout(renderModal._t);
+      renderModal._t = setTimeout(() => {
+        if (!modalState) { mask.classList.remove("show", "closing"); mask.innerHTML = ""; }
+      }, REDUCED_MOTION ? 0 : 200);
+    }
+    syncOverlayHistory();
+    return;
+  }
+  clearTimeout(renderModal._t);
   const o = modalState;
-  mask.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
-    <div class="m-title">${esc(o.title)}</div>
+  mask.classList.remove("closing");
+  mask.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+    <div class="m-grab" aria-hidden="true"></div>
+    <div class="m-title" id="m-title">${esc(o.title)}</div>
     ${o.body ? `<div class="m-body">${esc(o.body)}</div>` : ""}
-    ${o.html ? `<div style="margin-top:14px">${o.html}</div>` : ""}
-    ${o.input ? `<input class="in" id="m-input" style="margin-top:14px">` : ""}
+    ${o.html ? `<div class="m-html">${o.html}</div>` : ""}
+    ${o.input ? `<input class="in m-input" id="m-input" ${o.inputMode ? `inputmode="${o.inputMode}"` : ""} enterkeyhint="done" autocomplete="off">` : ""}
     <div class="m-actions">
-      <button class="btn ghost" onclick="A.modalCancel()">取消</button>
-      <button class="btn ${o.danger ? "danger" : ""}" onclick="A.modalOk()">${esc(o.okText || "确定")}</button>
+      <button class="btn ghost" onclick="A.modalCancel()">${esc(o.cancelText || (o.cancelOnly ? "关闭" : "取消"))}</button>
+      ${o.cancelOnly ? "" : `<button class="btn ${o.danger ? "danger" : ""}" onclick="A.modalOk()">${esc(o.okText || "确定")}</button>`}
     </div></div>`;
-  if (o.input) { const i = $("m-input"); i.value = o.value || ""; i.focus(); }
+  // 点遮罩关闭；但弹窗里有输入框时不这么做，免得手一滑把填了一半的内容丢了
+  mask.onclick = (e) => {
+    if (e.target === mask && !mask.querySelector(".modal input:not([type=checkbox]), .modal textarea")) A.modalCancel();
+  };
   mask.classList.add("show");
+  if (o.input) {
+    const i = $("m-input");
+    i.value = o.value || "";
+    i.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) A.modalOk(); };
+    setTimeout(() => { i.focus(); try { i.select(); } catch (x) { } }, 60);
+  }
+  attachSheetDrag(mask.querySelector(".modal"));
+  syncOverlayHistory();
+}
+// 底部面板下拉关闭：只在把手和标题上按住才算拖面板，面板里的列表照常滚动
+function attachSheetDrag(sheet) {
+  if (!sheet || !isNarrow()) return;
+  const mask = $("mask");
+  let y0 = null, dy = 0, pid = null, hist = [];
+  const down = (e) => {
+    if (e.pointerType === "mouse") return;
+    y0 = e.clientY; dy = 0; pid = e.pointerId; hist = [{ y: y0, t: performance.now() }];
+    try { e.currentTarget.setPointerCapture(pid); } catch (x) { }
+    sheet.classList.add("dragging");
+  };
+  const move = (e) => {
+    if (y0 === null || e.pointerId !== pid) return;
+    const d = e.clientY - y0;
+    dy = d > 0 ? d : -rubber(-d, 240);                       // 往上拉有阻尼，往下跟手
+    sheet.style.transform = `translate3d(0,${dy}px,0)`;
+    mask.style.setProperty("--mask-a", String(Math.max(0, 1 - Math.max(0, dy) / (sheet.offsetHeight || 400))));
+    const now = performance.now();
+    hist.push({ y: e.clientY, t: now });
+    while (hist.length > 2 && now - hist[0].t > 100) hist.shift();
+  };
+  const up = (e) => {
+    if (y0 === null || e.pointerId !== pid) return;
+    y0 = null;
+    const a = hist[0], b = hist[hist.length - 1];
+    const v = b.t - a.t > 8 ? (b.y - a.y) / (b.t - a.t) * 1000 : 0;
+    sheet.classList.remove("dragging");
+    mask.style.removeProperty("--mask-a");
+    if (dy + project(v, 0.99) > sheet.offsetHeight * 0.4 || v > 900) { sheet.style.transform = "translate3d(0,110%,0)"; A.modalCancel(); }
+    else sheet.style.transform = "";
+  };
+  sheet.querySelectorAll(".m-grab, .m-title").forEach(h => {
+    h.addEventListener("pointerdown", down); h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", up); h.addEventListener("pointercancel", up);
+  });
 }
 
 /* ================= 表单小控件 ================= */
-// 日期：真正的 input[type=date] 透明地盖满整个按钮区域直接接收点击/触摸(不靠 JS 模拟点击，
-// 部分手机浏览器不支持 showPicker() 会导致点了没反应)，下面露出显示「2026年8月15日」的中文按钮
+// 真正的 input[type=date] 透明盖满按钮区域接收点击（部分手机不支持 showPicker() 会点了没反应），下面露出中文日期按钮
 function dateFieldHtml(id, v, onChange) {
   return `<div class="datefield">
-    <button type="button" class="in date-btn ${v ? "" : "empty"}" id="${id}--label" tabindex="-1">${v ? esc(fmtDate(v)) : "选择日期"}</button>
+    <button type="button" class="in date-btn ${v ? "" : "is-empty"}" id="${id}--label" tabindex="-1">${v ? esc(fmtDate(v)) : "选择日期"}</button>
     <input type="date" id="${id}" class="date-native" value="${esc(v || "")}" autocomplete="off"
       onchange="A.syncDateLabel('${id}');${onChange}" onclick="A.openDate(this)" onfocus="A.openDate(this)"></div>`;
 }
-// 月份：跟日期同一套做法——原生控件透明地盖在上面接收点击，界面上显示的是我们自己排的中文
-// 「2026年8月」，不用浏览器原生渲染出来的英文月份名。个别老浏览器不认 input[type=month]
-// （会退化成文本框），那种情况下改用「年 + 月」两个下拉，保证哪台手机都点得动。
+// 月份同日期做法；不支持 input[type=month] 的老浏览器会退化成文本框，改用「年+月」两个下拉兜底
 const MONTH_INPUT_OK = (function () {
   const i = document.createElement("input");
   i.setAttribute("type", "month");
@@ -558,7 +1152,7 @@ const MONTH_INPUT_OK = (function () {
 function monthFieldHtml(id, v, onChange) {
   if (MONTH_INPUT_OK) {
     return `<div class="datefield">
-      <button type="button" class="in date-btn ${v ? "" : "empty"}" id="${id}--label" tabindex="-1">${v ? esc(fmtMonth(v)) : "选择月份"}</button>
+      <button type="button" class="in date-btn ${v ? "" : "is-empty"}" id="${id}--label" tabindex="-1">${v ? esc(fmtMonth(v)) : "选择月份"}</button>
       <input type="month" id="${id}" class="date-native" value="${esc(v || "")}" autocomplete="off"
         onchange="A.syncMonthLabel('${id}');${onChange}" onclick="A.openDate(this)" onfocus="A.openDate(this)"></div>`;
   }
@@ -589,19 +1183,129 @@ const SUB_VIEWS = { processes: "home", styles: "home", styleprocs: "home", atten
   scanlog: "home", payroll: "home", notifs: "mine",
   cutorders: "home", cutform: "styles", cutview: "cutorders", cutprint: "cutorders",
   cutprogress: "cutorders", bundleprogress: "cutprogress", procprogress: "cutprogress" };
-function go(v, id) {
+const VIEW_SET = { home: 1, scan: 1, mine: 1, admin: 1, processes: 1, styles: 1, styleprocs: 1, attendance: 1,
+  efficiency: 1, scanlog: 1, payroll: 1, notifs: 1, cutorders: 1, cutform: 1, cutview: 1, cutprint: 1,
+  cutprogress: 1, bundleprogress: 1, procprogress: 1 };
+// 这几个页面离了 id 没东西可看，URL 里缺 id 时退回上级
+const NEEDS_ID = { styleprocs: 1, cutform: 1, cutview: 1, cutprint: 1, cutprogress: 1, bundleprogress: 1, procprogress: 1 };
+
+/* ================= 路由 · 返回键：每页记一条历史，浮层（弹窗/大图/表单）多垫一条，返回键先关浮层 ================= */
+// history.back() 是异步的，紧跟着的历史操作要排到它完成之后，H.exec 负责排队
+const H = {
+  pending: 0, queue: [],
+  exec(fn) { if (H.pending) H.queue.push(fn); else fn(); },
+  back() { H.pending++; history.back(); }
+};
+const routeUrl = (v, id) => v === "home" ? "/" : "/" + v + (id ? "/" + encodeURIComponent(id) : "");
+function parseLocation() {
+  const parts = location.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  const v = parts[0] || "home", id = parts[1] ? decodeURIComponent(parts[1]) : null;
+  if (!VIEW_SET[v]) return { v: "home", id: null };
+  if (NEEDS_ID[v] && !id) return { v: SUB_VIEWS[v] || "home", id: null };
+  return { v, id };
+}
+const overlayOpen = () => !!(lightbox || modalState || styleForm || state.tplEditing);
+function syncOverlayHistory() {
+  if (!history.pushState) return;
+  H.exec(() => {
+    const st = history.state || {};
+    if (overlayOpen() && !st.overlay) history.pushState(Object.assign({}, st, { overlay: 1 }), "");
+    else if (!overlayOpen() && st.overlay) H.back();
+  });
+}
+// 表单"改没改过"：打开时拍一张快照，按返回时对比，改过才问要不要放弃
+function formSnap() {
+  const pe = state.pe || {};
+  return JSON.stringify([styleForm && [styleForm.name, styleForm.code, styleForm.customer, styleForm.size, styleForm.color],
+    state.tplEditing && state.tplEditing.name, pe.mode, pe.items, (photoDraft.style || []).map(p => p.key)]);
+}
+function formDirty() {
+  syncPeForms();
+  return !!formSnap.base && formSnap() !== formSnap.base;
+}
+// 重绘前先把款式名/模板名/工序表输入框的值兜回 state，否则重绘会用旧值覆盖用户刚打的字
+function syncPeForms() { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); }
+// 防抖搜索框：中文输入法组字时不重绘（会打断输入），停顿后再重绘并把光标定位回原处。
+// apply 先改 state，reload（可选）在重绘前跑一次异步请求，比如按关键词重新拉列表。
+function debouncedSearch(timerKey, elId, delay, apply, reload) {
+  return (v) => {
+    if (A._ime) return;
+    apply(v);
+    clearTimeout(A[timerKey]);
+    A[timerKey] = setTimeout(async () => {
+      if (reload) await reload();
+      render();
+      const el = $(elId); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
+    }, delay);
+  };
+}
+// 返回键落到这里：先关最上面那层浮层；表单改过的先问一句
+function closeTopOverlay(fromBack) {
+  if (lightbox) { lightbox = null; renderLightbox(); return true; }
+  if (modalState) { modalState = null; renderModal(); return true; }
+  if (styleForm || state.tplEditing) {
+    const leave = () => { if (styleForm) A.cancelStyle(); else A.tplCancel(); };
+    if (fromBack && formDirty()) {
+      modal({ title: "放弃这次修改？", body: "填了的内容还没保存，离开就没了。", danger: true,
+        okText: "放弃", cancelText: "继续编辑", onOk: () => { setTimeout(leave, 0); return true; } });
+    } else leave();
+    return true;
+  }
+  return false;
+}
+window.addEventListener("popstate", (e) => {
+  if (H.pending) {
+    H.pending--;
+    if (!H.pending) { const q = H.queue; H.queue = []; q.forEach(f => f()); }
+    return;
+  }
+  // 浮层那条记录已经被系统弹掉了。关掉最上面一层；还剩别的浮层的话 syncOverlayHistory 会再垫回一条
+  if (overlayOpen()) { closeTopOverlay(true); syncOverlayHistory(); return; }
+  if (!me()) return;
+  const st = e.state && e.state.v ? e.state : parseLocation();
+  go(st.v, st.id, { fromPop: true, y: st.y });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (lightbox || modalState) { closeTopOverlay(false); e.preventDefault(); }
+    else if (notifPanelOpen) A.toggleNotifPanel();
+    return;
+  }
+  if (lightbox && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { A.lbStep(e.key === "ArrowLeft" ? -1 : 1); e.preventDefault(); }
+});
+
+function go(v, id, opt) {
+  const o = opt || {};
+  if (!VIEW_SET[v]) { v = "home"; id = null; }
+  id = id || null;
+  const same = route.v === v && route.id === id, y = window.scrollY;
   if (v !== "processes") { state.tplEditing = null; }
-  route = { v, id: id || null };
-  lightbox = null; renderLightbox();
   if (v !== "styles") { styleForm = null; photoDraft = {}; }
+  notifPanelOpen = false;
+  route = { v, id };
+  lightbox = null; renderLightbox();
+  modalState = null; renderModal();
+  if (!o.fromPop && history.pushState) {
+    const url = routeUrl(v, id);
+    H.exec(() => {
+      const cur = history.state || {}, depth = cur.depth || 0;
+      if (same || o.replace) history.replaceState({ v, id, depth }, "", url);
+      else {
+        history.replaceState(Object.assign({}, cur, { y }), "");      // 记下离开时滚到哪了，回来时恢复
+        history.pushState({ v, id, depth: depth + 1 }, "", url);
+      }
+    });
+  }
   render(); window.scrollTo(0, 0);
   // 出错也要重绘一次：loadView 里出错时已经把对应数据清空了，别让页面继续显示上一次的旧内容
-  loadView(v).then(render).catch(e => { render(); toast((e && e.error) || "加载失败"); });
+  loadView(v).then(() => { render(); if (o.y) window.scrollTo(0, o.y); })
+    .catch(e => { render(); toast((e && e.error) || "加载失败"); });
 }
 /* crumb：桌面端侧边栏能直接跳到任何工具页，不需要手机端"‹ 返回上一级"的手势按钮，
  * 所以额外给出面包屑用的 {label, fn}，桌面端 CSS 隐藏 left 返回按钮改显示它；手机端不变。 */
 function pageMeta() {
-  const back = (label, v) => `<button class="nav-btn" onclick="go('${v}')">‹ ${esc(label)}</button>`;
+  const back = (label, v) => `<button class="nav-btn nav-back" onclick="A.navBack('${v}')" aria-label="返回${esc(label)}">
+    <svg viewBox="0 0 12 20" aria-hidden="true"><path d="M10 2L2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(label)}</button>`;
   const T = {
     home: "首页", scan: "打点", mine: "我的", admin: "管理",
     processes: "工序模板", styles: "款式管理", styleprocs: "修改工序", attendance: "考勤录入",
@@ -610,10 +1314,8 @@ function pageMeta() {
     cutprogress: "生产进度", bundleprogress: "生产进度详情", procprogress: "工序进展"
   };
   const parent = SUB_VIEWS[route.v];
-  // 面包屑要走完整条链：生产进度详情 › 生产进度 › 生产管理 › 首页。
-  // 新加的页面嵌套到三层，只显示直接上级的话在桌面端会看不出自己在哪儿。
-  // 注意逐级的 id 我们并不保留（每页只知道自己的 id），所以链上除了直接上级之外
-  // 都只能回到该页的"无 id"状态——对 home/styles/cutorders 这些列表页正好合适。
+  // 面包屑走完整条链（如 生产进度详情 › 生产进度 › 生产管理 › 首页）；除直接上级外链上节点不带 id，
+  // 只能回到该页的"无 id"列表态，对 home/styles/cutorders 这类列表页正合适。
   const chain = [];
   let cur = parent, guard = 0;
   while (cur && guard++ < 6) { chain.unshift(cur); cur = SUB_VIEWS[cur]; }
@@ -630,13 +1332,12 @@ function tabbarHtml() {
   tabs.push(["mine", "我的", "mine"]);
   const active = SUB_VIEWS[route.v] || route.v;
   return `<nav class="tabbar">${tabs.map(([v, label, ic]) => `
-    <button class="tab ${active === v ? "on" : ""}" onclick="go('${v}')">
-      <span class="ti">${icon(ic)}${v === "mine" && state.notif.unread ? `<span class="badge">${state.notif.unread > 99 ? "99+" : state.notif.unread}</span>` : ""}</span>
+    <button class="tab ${active === v ? "on" : ""}" onclick="go('${v}')" ${active === v ? `aria-current="page"` : ""}>
+      <span class="ti">${icon(ic)}${v === "mine" ? badgeHtml() : ""}</span>
       <span>${esc(label)}</span></button>`).join("")}</nav>`;
 }
-// 桌面端左侧固定侧边栏(≥1024px 才显示，CSS 控制；手机端渲染进 DOM 但 display:none，不影响手机端布局)。
-// 工作台里那一堆工具格子在桌面端直接拆开摆进侧边栏(分组，参照 gendan 的做法/图二那个模板)，
-// 桌面端不用先进工作台再点格子，跟移动端"格子入口"是两套并存的导航，互不影响。
+// 桌面端左侧固定侧边栏(≥1024px 才显示，CSS 控制；手机端渲染进 DOM 但 display:none)。
+// 工作台的工具格子在桌面端拆开分组摆进侧边栏，跟移动端"格子入口"两套导航并存、互不影响。
 function sidebarHtml() {
   const active = SUB_VIEWS[route.v] || route.v;
   const m = me();
@@ -661,39 +1362,38 @@ function sidebarHtml() {
       <div class="dsb-group"><div class="dsb-group-title">${esc(title)}</div>
         ${items.map(([v, label, ic]) => item(v, label, ic)).join("")}</div>`).join("")}</div>
     <div class="dsb-foot">
-      <span class="avatar">${esc((m.name || "").length > 2 ? m.name.slice(-2) : m.name)}</span>
+      <span class="avatar">${esc(shortName(m.name))}</span>
       <div><div class="dsb-foot-name">${esc(m.name)}</div><div class="dsb-foot-role">${esc(roleLabelOf(m))}</div></div>
     </div>
   </nav>`;
 }
 // 桌面端顶部右上角铃铛按钮(放在居中的 .navbar-in 里，跟标题同一行)
 function deskBellBtnHtml() {
-  const n = state.notif.unread;
   const m = me();
-  return `<button class="dbell" onclick="A.toggleNotifPanel()" aria-label="通知">${icon("bell")}${n ? `<span class="dbell-dot">${n > 99 ? "99+" : n}</span>` : ""}</button>
+  return `<button class="dbell" onclick="A.toggleNotifPanel()" aria-label="通知" aria-expanded="${notifPanelOpen}">${icon("bell")}${badgeHtml("dbell-dot")}</button>
     <div class="dh-user">
-      <span class="avatar sm">${esc((m.name || "").length > 2 ? m.name.slice(-2) : m.name)}</span>
+      <span class="avatar sm">${esc(shortName(m.name))}</span>
       <span class="dh-uname">${esc(m.name)}</span>
     </div>`;
 }
-// 通知下拉面板 —— 不能挂在 .navbar-in(居中/限宽)或铃铛按钮下面，那样面板位置会跟着
-// 居中容器的宽度走，宽屏下经常对不齐/被裁切。要直接挂在 <header class="navbar"> 下面
-// (跟 .navbar-in 平级)：.navbar 是 position:sticky 且没有限宽，绝对定位的面板相对它摆放，
-// right:24px 就是稳定贴着"真正可用区域"的右边，不受居中内容宽度影响(跟 gendan 同一个做法)。
+// 通知面板必须挂在 <header class="navbar">（position:sticky 且不限宽）下面，不能挂在居中/限宽的
+// .navbar-in 或铃铛按钮下面，否则宽屏下面板位置会跟着居中容器宽度走，对不齐或被裁切。
 function deskNotifOverlayHtml() {
   if (!notifPanelOpen) return "";
-  const list = state.notif.list || [];
+  const list = state.notif.list;
   return `<div class="dbell-back" onclick="A.toggleNotifPanel()"></div>
-    <div class="dbell-panel">
-      <div class="dbell-panel-head"><span>通知</span>${list.some(x => !x.read)
-        ? `<a href="javascript:void(0)" onclick="event.stopPropagation();A.markAllNotifRead()">全部已读</a>` : ""}</div>
-      <div class="dbell-panel-list">${list.length ? list.map(x => notifItemHtml(x, true)).join("")
-        : `<div class="empty" style="padding:24px 16px">暂无通知</div>`}</div>
+    <div class="dbell-panel" role="dialog" aria-label="通知">
+      <div class="dbell-panel-head"><span>通知</span><span class="dbell-acts">
+        ${(list || []).some(x => !x.read) ? `<button type="button" class="link-btn" onclick="event.stopPropagation();A.markAllNotifRead()">全部已读</button>` : ""}
+        ${(list || []).some(x => x.read) ? `<button type="button" class="link-btn" onclick="event.stopPropagation();A.clearReadNotifs()">清空已读</button>` : ""}
+      </span></div>
+      <div class="dbell-panel-list">${list === null ? skeletonHtml(3, false) : list.length ? list.map(x => notifItemHtml(x, { desk: true, del: true })).join("")
+        : emptyHtml("没有新通知", "inbox")}</div>
+      <button type="button" class="dbell-foot" onclick="go('notifs')">查看全部通知</button>
     </div>`;
 }
 function render() {
   const app = $("app");
-  galleryReg = {};                 // 缩略图分组注册表跟着这次渲染重新登记，避免越攒越多
   if (showWelcome) { app.innerHTML = vWelcome(); return; }
   if (!me()) { app.innerHTML = vLogin(); return; }
   const meta = pageMeta();
@@ -716,6 +1416,7 @@ function render() {
     </div>${deskNotifOverlayHtml()}</header>
     ${tabbarHtml()}
     <main class="page" data-view="${route.v}">${(views[route.v] || vHome)()}</main>`;
+  syncOverlayHistory();
 }
 
 /* ---------- 登录 ---------- */
@@ -747,10 +1448,7 @@ function vWelcome() {
 }
 
 /* ---------- 工作台 ---------- */
-// 工作台桌面端首屏内容：手机端只看到 hero-card + 个人信息卡 + 工具格子(跟以前一样)；
-// 桌面端(≥1024px，工具格子被 CSS 隐藏，因为已经拆到侧边栏了)额外看到一排统计卡片，
-// 管理员和普通员工看到的统计维度不一样——管理员看全局(在职人数/今日全员完成/本月工资总额)，
-// 普通员工看自己的(本月完成度/本月预估工资)，参照 gendan 桌面端统计卡片的样式风格。
+// 桌面端(≥1024px)工作台首屏多一排统计卡片(工具格子已挪进侧边栏)：管理员看全局数据，员工看自己的。
 function homeStatsHtml() {
   const stat = (label, value, sub, ic) => `<div class="hstat">
     <span class="hstat-ic">${icon(ic)}</span>
@@ -759,17 +1457,17 @@ function homeStatsHtml() {
   if (isManager()) {
     const d = state.home.mgr;
     if (!d) return "";
-    const recent = (state.notif.list || []).slice(0, 5);
+    const recent = state.notif.recent || [];
     return `<section class="group home-desk-only">
       <div class="hstat-row">
-        ${stat("在职员工", d.staffCount, "", "employees")}
-        ${stat("今日全员完成", d.todayQty, "件", "efficiency")}
-        ${stat("本月工资总额", "¥" + num(d.monthWage), "预估，含调整项", "payroll")}
+        ${stat("在职员工", d.staffCount, "人", "employees")}
+        ${stat("今日全员完成", num(d.todayQty), "件", "efficiency")}
+        ${stat("本月工资总额", money(d.monthWage), "预估，含调整项", "payroll")}
       </div>
     </section>
     <section class="group home-desk-only">
-      <div class="group-title">最近动态</div>
-      <div class="card">${recent.length ? recent.map(x => notifItemHtml(x, false)).join("") : `<div class="empty">暂无动态</div>`}</div>
+      <div class="group-title">最近动态<button class="link-btn right" onclick="go('notifs')">全部</button></div>
+      <div class="card">${recent.length ? recent.map(x => notifItemHtml(x)).join("") : emptyHtml("暂无动态", "inbox")}</div>
     </section>`;
   }
   const d = state.home.emp;
@@ -777,22 +1475,38 @@ function homeStatsHtml() {
   const eff = d.eff, pay = d.pay;
   return `<section class="group home-desk-only">
     <div class="hstat-row">
-      ${stat("本月完成度", eff && eff.percent !== null ? pctText(eff.percent) : "—", "打卡时长 / 出勤时长", "efficiency")}
+      ${stat("本月完成度", eff && eff.percent !== null ? pctText(eff.percent) : "—", "时效小时 / 出勤小时", "efficiency")}
       ${stat("本月出勤", eff ? num(eff.attendanceHours) : "—", "小时", "attendance")}
-      ${stat("本月预估工资", pay ? "¥" + num(pay.total) : "—", "计件 + 餐补/奖金 - 扣罚", "payroll")}
+      ${stat("本月预估工资", pay ? money(pay.total) : "—", "计件 + 餐补/奖金 - 扣罚", "payroll")}
     </div>
   </section>`;
+}
+// 早上好 / 下午好：打开 App 第一眼先叫名字，比一个光秃秃的数字亲切
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? "夜深了" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好";
 }
 function vHome() {
   const m = me();
   const tool = (v, label, ic, badge) => `<button class="tool" onclick="go('${v}')">
-    ${icon(ic)}<span>${esc(label)}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
+    <span class="tool-ic">${icon(ic)}</span><span>${esc(label)}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
+  // 管理员/主管不计件，"今天完成件数"对他们永远是 0；换成全车间今天的产出，下面再带两个关键数
+  const mgr = isManager() ? state.home.mgr : null;
+  const emp = !isManager() ? state.home.emp : null;
+  const heroNum = isManager() ? (mgr ? num(mgr.todayQty) : "—") : num(state.home.today);
+  const effP = emp && emp.eff && emp.eff.percent !== null && emp.eff.percent !== undefined ? emp.eff.percent : null;
+  const chips = isManager()
+    ? (mgr ? [`在职 ${mgr.staffCount} 人`, `本月工资 ${money(mgr.monthWage)}`] : [])
+    : [effP !== null ? `本月完成度 ${pctText(effP)}` : "", emp && emp.pay ? `本月预估 ${money(emp.pay.total)}` : ""].filter(Boolean);
   return `<div class="hero-card">
-      <div class="hero-num num">${state.home.today}</div>
-      <div class="hero-text">今天完成件数，继续加油</div>
+      <div class="hero-hi">${greeting()}，${esc(m.name || "")}</div>
+      <div class="hero-num num">${heroNum}<span class="hero-unit">件</span></div>
+      <div class="hero-text">${isManager() ? "今天全车间完成件数" : "今天完成件数，继续加油"}</div>
+      ${chips.length ? `<div class="hero-chips">${chips.map(c => `<span class="hero-chip num">${esc(c)}</span>`).join("")}</div>` : ""}
     </div>
 
     <section class="group home-profile-card"><div class="card"><div class="row-item">
+      <span class="avatar mini">${esc(shortName(m.name))}</span>
       <div class="row-main"><div class="row-label">${esc(m.name)}</div><div class="row-sub num">${esc(m.phone)}</div></div>
       <span class="tag">${esc(roleLabelOf(m))}</span>
     </div></div></section>
@@ -815,10 +1529,8 @@ function vHome() {
 }
 
 /* ---------- 打点 ---------- */
-// 摄像头扫码：原生 BarcodeDetector 只有 Chrome/安卓有，iOS 上 Safari/Chrome/Edge
-// 内核都是 WebKit，一律没有。所以没有原生实现时退回 jsQR（本地打包，PWA 离线也能用），
-// 两条路都基于 getUserMedia，iPhone 上照样扫得动。
-// 唯一的硬前提是安全上下文：必须 https（或 localhost），否则浏览器不给摄像头。
+// 原生 BarcodeDetector 只有 Chrome/安卓有，iOS 全系 WebKit 内核没有，没有原生实现时退回 jsQR；
+// 两条路都基于 getUserMedia，需要 https（或 localhost）安全上下文，否则浏览器不给摄像头。
 const HAS_NATIVE_SCAN = typeof window !== "undefined" && "BarcodeDetector" in window;
 const CAN_SCAN = typeof navigator !== "undefined" &&
   !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
@@ -827,26 +1539,33 @@ function scanBundleHtml() {
   const sc = state.scan, b = sc.bundle;
   return `<section class="group">
     <div class="group-title">扫菲打点</div>
-    <div class="card">
-      <div class="field row"><span>扎号 / 菲票号</span>
-        <input class="in" id="sc-ticket" value="${esc(sc.ticketInput)}" placeholder="扫码或手动输入"
-          inputmode="numeric" onchange="A.setTicketInput(this.value)">
-        <button class="act-btn" onclick="A.lookupTicket()">查找</button>
-        ${CAN_SCAN ? `<button class="act-btn" onclick="A.startCamera()">${sc.camOn ? "关闭摄像头" : "摄像头扫码"}</button>` : ""}</div>
-      ${sc.camOn ? `<div class="field"><div class="scan-viewport">
+    <div class="card scan-card">
+      ${sc.camOn ? `<div class="scan-viewport">
           <video id="scan-cam" class="scan-cam" playsinline muted autoplay></video>
-          <div class="scan-frame" aria-hidden="true"></div></div>
-        <div class="row-sub scan-hint">${esc(sc.camMsg || "把菲票上的二维码对准取景框")}</div></div>` : ""}
-      ${!CAN_SCAN ? `<div class="field"><div class="row-sub">${
+          <div class="scan-frame" aria-hidden="true"><i class="scan-line"></i></div>
+          <div class="scan-tools">
+            <button type="button" class="scan-tool" id="scan-torch" hidden onclick="A.toggleTorch()" aria-pressed="false">${icon("torch")}<span>手电筒</span></button>
+            <button type="button" class="scan-tool" onclick="A.stopCamera()">${icon("close")}<span>关闭</span></button>
+          </div></div>
+        <div class="scan-hint" role="status">${esc(sc.camMsg || "把菲票上的二维码放进框里")}</div>`
+      : CAN_SCAN ? `<button type="button" class="scan-cta" onclick="A.startCamera()">
+          <span class="scan-cta-ic">${icon("scan")}</span>
+          <span><b>扫码打点</b><small>对准菲票上的二维码，自动识别</small></span></button>` : ""}
+      <div class="scan-manual">
+        <input class="in" id="sc-ticket" value="${esc(sc.ticketInput)}" placeholder="或手动输入扎号 / 菲票号"
+          inputmode="numeric" enterkeyhint="search" autocomplete="off"
+          onchange="A.setTicketInput(this.value)" onkeydown="if(event.key==='Enter')A.lookupTicket()">
+        <button class="btn mini" onclick="A.lookupTicket()">查找</button>
+      </div>
+      ${!CAN_SCAN ? `<div class="scan-note">${
         location.protocol === "https:" || location.hostname === "localhost"
           ? "这个浏览器不给用摄像头，请手动输入扎号或菲票号"
-          : "摄像头需要 https 才能用（当前是 http），请手动输入扎号或菲票号"}</div></div>` : ""}
+          : "摄像头需要 https 才能用（当前是 http），请手动输入扎号或菲票号"}</div>` : ""}
     </div>
 
-    ${b ? `<div class="card style-card" style="margin-top:10px">
+    ${b ? `<div class="card style-card scan-result" id="scan-result" style="margin-top:10px">
       <div class="sc-head">
-        ${showable(sc.bundleOrder.style_image) ? `<img class="sc-thumb" src="${esc(sc.bundleOrder.style_image)}"
-            onclick="A.lightboxOne(this)" alt="款式图">` : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        ${styleThumbHtml(sc.bundleOrder.style_id, sc.bundleOrder.style_image)}
         <div class="sc-info">
           <div class="sc-title">扎号 ${b.bundle_no}　菲票 ${b.ticket_no}</div>
           <div class="sc-grid">
@@ -865,10 +1584,11 @@ function scanBundleHtml() {
             <div class="row-sub">已完成 ${num(p.done)} 件，剩余 ${num(p.remaining)} 件</div></div>
           <div class="row-acts">
             ${p.remaining > 0 ? `<input class="in tiny" id="sq-${p.id}" type="number" inputmode="numeric"
-                placeholder="${num(p.remaining)}">
+                placeholder="${num(p.remaining)}" aria-label="${esc(p.name)} 打点件数，不填就是做完剩下的 ${num(p.remaining)} 件">
               <button class="act-btn" onclick="A.scanBundleSubmit('${p.id}')">打点</button>`
             : `<span class="tag ok">已完成</span>`}
           </div></div>`).join("")}
+        <div class="scan-tip">件数不填 = 这一扎剩下的全部做完</div>
       </div>
     </div>` : ""}
   </section>`;
@@ -902,7 +1622,7 @@ function vScan() {
 
   <section class="group">
     <div class="group-title">当天打点记录</div>
-    <div class="card">${recs === null ? `<div class="empty">加载中…</div>` : recs.length ? recs.map(r => {
+    <div class="card">${recs === null ? skeletonHtml(3, false) : recs.length ? recs.map(r => {
         const p = (state.processes || []).find(x => x.id === r.process_id);
         const name = r.process_name || (p ? p.name : "工序");
         // 扫扎产生的记录带扎号/颜色/尺码，自由打点的没有，两种都要能读
@@ -910,20 +1630,15 @@ function vScan() {
           ? `扎号 ${r.bundle_no}${r.color ? " · " + esc(r.color) : ""}${r.size ? " · " + esc(r.size) : ""}`
           : "自由打点";
         return `<div class="row-item">
-          <div class="row-main"><div class="row-label">${esc(name)}<span class="row-sub"> ${sub}</span></div>
-            <div class="row-sub num">${num(r.qty)} 件</div></div>
-          <div class="row-acts"><button class="act-btn danger" onclick="A.delScan('${r.id}')">删除</button></div></div>`;
-      }).join("") : `<div class="empty">这天还没有打点记录</div>`}</div>
+          <div class="row-main"><div class="row-label">${esc(name)}</div>
+            <div class="row-sub">${sub} · ${HHMM(r.created_at)}</div></div>
+          <div class="slog-qty num">${num(r.qty)}<span class="slog-unit">件</span></div>
+          <div class="row-acts"><button class="act-btn danger ghost" onclick="A.delScan('${r.id}')">删除</button></div></div>`;
+      }).join("") : emptyHtml("这天还没有打点记录", "scan")}</div>
   </section>`;
 }
 
-/* ---------- 工序模板 ---------- */
-/* ---------- 工序模板 ----------
- * 这里管的是「整套工序清单」模板（jj_process_templates），不是单条工序。
- * 跟款式表单里的「生产工序」、款式列表的「修改工序」用的是同一个编辑器组件，
- * 所以在任何一处点「保存模板」，都会出现在这一页；在这一页改完，别处「选择模板」也能套到。
- * 老的单条工序定额表（jj_processes）只剩「自由打点」在用，不在这里露出。
- */
+/* ---------- 工序模板：整套工序清单，跟款式表单/修改工序页共用编辑器 ---------- */
 function vProcesses() {
   const list = state.tplList;
   const editing = state.tplEditing;   // 正在编辑/新建的模板：{ id, name } 或 null
@@ -946,7 +1661,7 @@ function vProcesses() {
       <div class="sum-item"><div class="sum-num num">${totalProcs}</div><div class="sum-label">工序总数</div></div>
     </div></section>
 
-  ${list === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+  ${list === null ? skeletonHtml(3)
     : list.length ? list.map((t) => {
       const total = t.items.reduce((n, it) => n + (Number(it.unitPrice) || 0), 0);
       return `<section class="group"><div class="card tpl-card">
@@ -964,46 +1679,40 @@ function vProcesses() {
         </div>
       </div></section>`;
     }).join("")
-    : `<section class="group"><div class="card"><div class="empty">
-        还没有工序模板。把常用的一整套工序存成模板，建款式时「选择模板」一键套用。
-      </div></div></section>`}
+    : `<section class="group"><div class="card">${emptyHtml("还没有工序模板。把常用的一整套工序存成模板，建款式时「选择模板」一键套用。", "processes")}</div></section>`}
 
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     <button class="btn block" onclick="A.tplNew()">新建工序模板</button></div></section>`;
 }
 
 /* ---------- 款式管理 ---------- */
-function styleImages(s) {
-  let imgs = [];
-  try { imgs = s.images ? JSON.parse(s.images) : []; } catch (e) { imgs = []; }
-  if ((!imgs || !imgs.length) && s.image) imgs = [s.image];
-  return normalizePhotos(imgs);
+// 搜索框：左边放大镜，有字时右边一个清除按钮（手机上删一长串款号很烦）
+function searchbarHtml(id, value, ph, handler) {
+  return `<div class="searchbar"><span class="sb-ic">${icon("search")}</span>
+    <input id="${id}" type="search" placeholder="${esc(ph)}" value="${esc(value || "")}" enterkeyhint="search"
+      autocomplete="off" oninput="${handler}(this.value)" ${IME_ATTRS}>
+    ${value ? `<button type="button" class="sb-clear" aria-label="清除" onclick="${handler}('');var i=document.getElementById('${id}');if(i){i.value='';i.focus()}">${icon("close")}</button>` : ""}</div>`;
 }
 function vStyles() {
   if (styleForm) return vStyleForm();
   const list = state.styles;
-  const kw = (state.styleKw || "").trim().toLowerCase();
-  // 搜索放在前端做：款式总量是几十到几百条，一次拉全再本地过滤，比每敲一个字打一次接口跟手
-  const shown = list === null ? null : (kw
-    ? list.filter(s => `${s.code || ""} ${s.name || ""}`.toLowerCase().includes(kw))
-    : list);
-  return `<div class="searchbar"><input id="st-kw" placeholder="请输入款号 / 款名" value="${esc(state.styleKw || "")}"
-      oninput="A.setStyleKw(this.value)"></div>
+  const kw = state.styleKw || "";
+  // 搜索放在前端做：款式总量是几十到几百条，一次拉全再本地过滤，比每敲一个字打一次接口跟手。
+  // 按相关度排序：款号完全相同的排第一，其次款号开头、款号包含、款名/客户包含
+  const shown = list === null ? null : rankFilter(list, kw, s => [s.code, s.name, s.customer]);
+  return `${searchbarHtml("st-kw", kw, "搜款号 / 款名 / 客户，空格隔开可组合", "A.setStyleKw")}
+  ${list && list.length ? `<div class="list-meta">${normText(kw) ? `找到 ${shown.length} 个款式` : `共 ${list.length} 个款式`}</div>` : ""}
 
-  ${shown === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+  ${shown === null ? skeletonHtml(4)
       : shown.length ? shown.map(s => {
-        const imgs = styleImages(s);
-        const cover = imgs.filter(showable)[0];
-        const g = regGallery(imgs.filter(showable));
         return `<section class="group"><div class="card style-card">
         <div class="sc-head">
-          ${cover ? `<img class="sc-thumb" src="${esc(cover)}" data-gallery="${g}" data-i="0"
-              onclick="A.lightboxFromEl(this)" alt="款式图">`
-            : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+          <span class="sc-thumb-wrap">${styleThumbHtml(s.id, s.image, s.image_count)}
+            ${s.image_count > 1 ? `<span class="sc-imgn num" aria-label="共 ${s.image_count} 张图">${s.image_count}</span>` : ""}</span>
           <div class="sc-info">
-            <div class="sc-title">款号 ${esc(s.code || "—")}</div>
+            <div class="sc-title">款号 ${hl(s.code || "—", kw)}</div>
             <div class="sc-grid">
-              <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${esc(s.name || "—")}</span></span>
+              <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${hl(s.name || "—", kw)}</span></span>
               <span class="sc-cell"><span class="sc-k">工序：</span><span class="sc-v">${num(s.process_count || 0)} 道</span></span>
               <span class="sc-cell"><span class="sc-k">工价：</span><span class="sc-v">¥${Number(s.total_price || 0).toFixed(4)}</span></span>
               <span class="sc-cell"><span class="sc-k">是否裁床：</span><span class="sc-v">${s.has_cutting === 0 ? "否" : "是"}</span></span>
@@ -1020,15 +1729,16 @@ function vStyles() {
         </div>
       </div></section>`;
       }).join("")
-      : `<section class="group"><div class="card"><div class="empty">${kw ? "没有匹配的款式" : "还没有款式"}</div></div></section>`}
+      : `<section class="group"><div class="card">${normText(kw)
+        ? emptyHtml(`没有找到「${kw.trim()}」相关的款式，换个关键词试试`, "search")
+        : emptyHtml("还没有款式，点下面「新建款式」加第一个", "styles")}</div></section>`}
 
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     <button class="btn block" onclick="A.newStyle()">新建款式</button></div></section>`;
 }
 
 /* ---------- 款式的尺码/颜色/客户选项控件 ----------
- * 原来的做法是一排 chip + 右上角一个裸齿轮图标（点开才能删选项），用户根本找不到，
- * 等于"没有删减功能"。改成：已选项 chip 自带 ×，选项的增删都收进同一个下拉面板里。 */
+ * 已选项 chip 自带 × 可删，选项的增删都收进同一个下拉面板里。 */
 const OPT_META = {
   size: { label: "款式尺码", listKey: "sizes", multi: true, ph: "搜索 / 选择尺码" },
   color: { label: "款式颜色", listKey: "colors", multi: true, ph: "搜索 / 选择颜色" },
@@ -1045,8 +1755,8 @@ function optPickerHtml(type) {
   const ui = state.optUI[type];
   const sel = optSelected(type);
   const kw = (ui.kw || "").trim();
-  const cand = all.filter((v) => !kw || v.toLowerCase().includes(kw.toLowerCase()));
-  const exact = all.some((v) => v === kw);
+  const cand = rankFilter(all, kw, (v) => [v]);
+  const exact = all.some((v) => normText(v) === normText(kw));
   return `<div class="field optbox${ui.open ? " open" : ""}">
     <span>${esc(meta.label)}${meta.multi ? "（可多选）" : ""}</span>
     <div class="opt-chips">
@@ -1057,7 +1767,7 @@ function optPickerHtml(type) {
     </div>
     ${ui.open ? `<div class="opt-panel">
       <input class="in opt-search" placeholder="${esc(meta.ph)}" value="${esc(ui.kw)}"
-        oninput="A.optSearch('${type}',this.value)" autocomplete="off">
+        oninput="A.optSearch('${type}',this.value)" autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
       <div class="opt-list">
         ${cand.length ? cand.map((v) => `<div class="opt-row${sel.includes(v) ? " on" : ""}"
             onclick="A.optToggle('${type}','${encodeURIComponent(v)}')">
@@ -1072,12 +1782,9 @@ function optPickerHtml(type) {
   </div>`;
 }
 
-/* ---------- 工序编辑器：款式表单里的「生产工序」段落和款式列表的「修改工序」页共用这一份 ----------
- * 之前那版只有 序号/工序名/工价，而且没有工序模板就完全加不了工序（"请先去工序模板里添加"
- * 是条死路）。现在工序名直接打字就能加，工序模板降级成可选的快捷来源。 */
-// 工价按"一个工人一天挣多少"倒推：工价 = 日工资基数 ÷ 日定额。
-// 例：日定额 909 件 → 工价 100/909 ≈ 0.11 元/件。
-// 基数存在后端设置里（管理员/主管可改），这里只是本地缓存，默认 100。
+/* ---------- 工序编辑器：款式表单「生产工序」段落和「修改工序」页共用这一份 ----------
+ * 工序名直接打字即可添加，工序模板只是可选的快捷来源。 */
+// 工价 = 日工资基数 ÷ 日定额（例：日定额 909 件 → 约 0.11 元/件）；基数存后端设置，这里是本地缓存，默认 100
 const dailyWage = () => Number(state.dailyWage) || 100;
 const PRICE_MODES = [["default", "默认单价"], ["size", "分码单价"], ["role", "分岗位单价"]];
 function peTotal() {
@@ -1124,30 +1831,30 @@ function procEditorHtml() {
     </div>
 
     <div class="card"><div class="tbl-wrap"><table class="tbl pe-tbl">
-      <tr><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th><th>日定额<span class="th-note">件/天</span></th>
+      <tr class="pe-head"><th>操作</th><th>序号</th><th>工序名称</th><th>工价价格(元)</th><th>日定额<span class="th-note">件/天</span></th>
         ${cols.map((c) => `<th>${esc(mode === "role" ? peRoleLabel(c) : c)}</th>`).join("")}
         <th>显示价格</th><th>可见岗位</th></tr>
-      ${pe.items.length ? pe.items.map((it, i) => `<tr>
-        <td><button class="act-btn danger" onclick="A.peDel(${i})">删除</button></td>
-        <td class="num">${i + 1}</td>
-        <td><input class="in" value="${esc(it.name)}" placeholder="工序名称" onchange="A.peSetName(${i},this.value)"></td>
-        <td><div class="stepper">
+      ${pe.items.length ? pe.items.map((it, i) => `<tr class="pe-row">
+        <td class="pe-c-del"><button class="act-btn danger" onclick="A.peDel(${i})" aria-label="删除第 ${i + 1} 道工序">删除</button></td>
+        <td class="pe-c-seq num" data-label="序号">${i + 1}</td>
+        <td class="pe-c-name" data-label="工序名称"><input class="in" value="${esc(it.name)}" placeholder="工序名称" onchange="A.peSetName(${i},this.value)"></td>
+        <td class="pe-c-price" data-label="工价（元）"><div class="stepper">
           <button type="button" onclick="A.peStep(${i},-1)" aria-label="减少工价">−</button>
           <input class="in num" type="number" inputmode="decimal" step="any" value="${esc(it.unitPrice)}"
             onchange="A.peSetPrice(${i},this.value)" aria-label="工价">
           <button type="button" onclick="A.peStep(${i},1)" aria-label="增加工价">＋</button></div></td>
-        <td><input class="in num pe-quota" type="number" inputmode="numeric" step="any"
+        <td class="pe-c-quota" data-label="日定额（件/天）"><input class="in num pe-quota" type="number" inputmode="numeric" step="any"
           value="${esc(it.dailyQuota === undefined || it.dailyQuota === null ? "" : it.dailyQuota)}"
           placeholder="件/天" onchange="A.peSetQuota(${i},this.value)" aria-label="日定额"></td>
-        ${cols.map((c) => `<td><input class="in pe-sub" type="number" inputmode="decimal" step="any"
+        ${cols.map((c) => `<td class="pe-c-sub" data-label="${esc(mode === "role" ? peRoleLabel(c) : c)}"><input class="in pe-sub" type="number" inputmode="decimal" step="any"
           value="${esc((it.prices && it.prices[c] !== undefined && it.prices[c] !== null) ? it.prices[c] : "")}"
           placeholder="${num(it.unitPrice)}"
           onchange="A.${mode === "role" ? "peSetRolePrice" : "peSetSizePrice"}(${i},'${encodeURIComponent(c)}',this.value)"></td>`).join("")}
-        <td><button class="sw ${it.showPrice ? "on" : ""}" onclick="A.peToggleShow(${i})"
+        <td class="pe-c-show" data-label="显示价格"><button class="sw ${it.showPrice ? "on" : ""}" onclick="A.peToggleShow(${i})"
           aria-label="显示价格" role="switch" aria-checked="${!!it.showPrice}"><i></i></button></td>
-        <td><button class="act-btn" onclick="A.pePickRoles(${i})">${
+        <td class="pe-c-roles" data-label="可见岗位"><button class="act-btn" onclick="A.pePickRoles(${i})">${
           it.visibleRoles && it.visibleRoles.length ? esc(it.visibleRoles.map(peRoleLabel).join("、")) : "所有岗位可见"}</button></td>
-      </tr>`).join("") : `<tr><td colspan="${6 + cols.length + 2}"><div class="empty">还没有工序，点下面「新增工序」直接打字添加</div></td></tr>`}
+      </tr>`).join("") : `<tr class="pe-empty"><td colspan="${6 + cols.length + 2}">${emptyHtml("还没有工序，点下面「新增工序」直接打字添加", "processes")}</td></tr>`}
     </table></div></div>
 
     <div class="pe-hint">填了日定额会自动按「工价 = ${dailyWage()} 元 ÷ 日定额」算出工价；
@@ -1186,7 +1893,7 @@ function vStyleForm() {
 function vStyleProcs() {
   // go() 切路由后会先同步 render() 一次，这时 loadView 还没跑完，state.pe 可能还是上一个页面
   // 留下的 null（或者上一个款式的数据）——不判空直接调用 procEditorHtml() 会当场报错。
-  if (!state.pe || state.pe.styleId !== route.id) return `<section class="group"><div class="empty">加载中…</div></section>`;
+  if (!state.pe || state.pe.styleId !== route.id) return skeletonHtml(4);
   return procEditorHtml() + `<section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     <button class="btn block" onclick="A.peSubmit()">保存</button>
     <button class="btn ghost block" onclick="go('styles')">取消</button></div></section>`;
@@ -1207,18 +1914,14 @@ function vAttendance() {
 
   <section class="group">
     <div class="group-title">本月考勤（${esc(fmtMonth(state.att.date.slice(0, 7)))}）</div>
-    <div class="card">${recs === null ? `<div class="empty">加载中…</div>` : recs.length ? recs.map(r => `
+    <div class="card">${recs === null ? skeletonHtml(3, false) : recs.length ? recs.map(r => `
       <div class="row-item"><div class="row-main"><div class="row-label">${esc(fmtDate(r.date))}</div></div>
         <div class="row-value num">${num(r.hours)} 小时</div></div>`).join("")
-      : `<div class="empty">这个月还没有考勤记录</div>`}</div>
+      : emptyHtml("这个月还没有考勤记录", "attendance")}</div>
   </section>`;
 }
 
-/* ---------- 效率看板 ----------
- * 完成度 = 时效小时 / 出勤小时。时效小时是把打点件数按工序定额折算回来的"应该花多少小时"，
- * 所以 100% 就是刚好做到定额，超过 100% 是快过定额。没录考勤的人算不出完成度，
- * 排在榜尾单列，不能当成 0% 跟真干得慢的人混在一起。
- */
+/* ---------- 效率看板：完成度 = 时效小时 / 出勤小时；没考勤的人单独列出，不当 0% ---------- */
 function effBarPct(p) { return Math.max(0, Math.min(100, Math.round((p || 0) * 100))); }
 function effTone(p) { return p >= 1 ? "ok" : p >= 0.8 ? "warn" : "bad"; }
 
@@ -1227,7 +1930,7 @@ function vEfficiency() {
   const head = `<section class="group"><div class="card">
     <label class="field"><span>月份</span>${monthFieldHtml("ef-month", state.eff.month, "A.setEffMonth(this.value)")}</label>
   </div></section>`;
-  if (raw === null) return head + `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+  if (raw === null) return head + skeletonHtml(4);
 
   // 这个月完全没动静的人（没打点也没考勤）不占榜单位置
   const list = raw.filter(x => x.qty > 0 || x.attendanceHours > 0);
@@ -1270,7 +1973,7 @@ function vEfficiency() {
   <section class="group">
     <div class="group-title">完成度排行 · ${esc(fmtMonth(state.eff.month))}</div>
     <div class="card">${rated.length ? rated.map((x, i) => card(x, i + 1)).join("")
-      : `<div class="empty">这个月还没有能算完成度的人（要先录考勤）</div>`}</div>
+      : emptyHtml("这个月还没有能算完成度的人（要先录考勤）", "efficiency")}</div>
   </section>
 
   ${unrated.length ? `<section class="group">
@@ -1283,12 +1986,8 @@ function vEfficiency() {
 
 
 
-/* ---------- 裁床编菲 ----------
- * 矩阵：行=颜色、列=尺码。每格两个输入——件数与扎数。
- * 件数的含义随「倍数模式」变：开=每扎件数；关=该格总件数（后端按扎数平分，余数补最后一扎）。
- * colors/sizes 数组的顺序 = 矩阵行列顺序 = 扎号编号的遍历顺序（尺码→该尺码第几扎→颜色轮转），
- * 所以这里用数组按点选先后维护，不能用集合。
- */
+/* ---------- 裁床编菲：行=颜色、列=尺码，每格填件数+扎数 ---------- */
+// colors/sizes 用数组保序：顺序就是扎号编号的遍历顺序
 const CF_SWITCHES = [
   ["customNo", "自定义扎号"], ["customVat", "自定义缸号"],
   ["rowCopy", "行复制"], ["colCopy", "列复制"],
@@ -1306,11 +2005,9 @@ function cfBundleCount() {
   return state.cf.colors.reduce((t, c) =>
     t + state.cf.sizes.reduce((x, z) => x + (Number(cfCell(c, z).bundles) || 0), 0), 0);
 }
-// 颜色/尺码的选择：候选来自全局选项池，点一下加进矩阵、再点一下移出
 function cfPickRow(kind) {
   const cf = state.cf;
-  // 候选只来自「这个款式已经选好的」颜色/尺码，不是全局选项池——
-  // 全局池里有别的款用的颜色，摆在这里会让人误以为这一款也能裁那个色。
+  // 候选只来自这个款式已选的颜色/尺码，不是全局选项池——全局池里别的款用的颜色摆在这里会让人误以为这一款也能裁那个色
   const all = kind === "color" ? cf.styleColors : cf.styleSizes;
   const cur = kind === "color" ? cf.colors : cf.sizes;
   const label = kind === "color" ? "添加颜色" : "添加尺码";
@@ -1329,8 +2026,8 @@ function cfCustomerPicker() {
   const cf = state.cf;
   const all = ((state.styleOptions || {}).customers) || [];
   const kw = (cf.custKw || "").trim();
-  const cand = all.filter((v) => !kw || v.toLowerCase().includes(kw.toLowerCase()));
-  const exact = all.some((v) => v === kw);
+  const cand = rankFilter(all, kw, (v) => [v]);
+  const exact = all.some((v) => normText(v) === normText(kw));
   return `<div class="field optbox${cf.custOpen ? " open" : ""}"><span>客户</span>
     <div class="opt-chips">
       ${cf.customer ? `<span class="chip on">${esc(cf.customer)}<button class="chip-x" type="button"
@@ -1340,7 +2037,7 @@ function cfCustomerPicker() {
     </div>
     ${cf.custOpen ? `<div class="opt-panel">
       <input class="in opt-search" placeholder="搜索 / 选择客户" value="${esc(cf.custKw || "")}"
-        oninput="A.cfCustSearch(this.value)" autocomplete="off">
+        oninput="A.cfCustSearch(this.value)" autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
       <div class="opt-list">
         ${cand.length ? cand.map((v) => `<div class="opt-row${cf.customer === v ? " on" : ""}"
             onclick="A.cfSetCustomer('${encodeURIComponent(v)}')">
@@ -1381,7 +2078,7 @@ function cfMatrixHtml() {
 }
 function vCutForm() {
   const cf = state.cf;
-  if (!cf) return `<div class="empty">加载中…</div>`;
+  if (!cf) return skeletonHtml(5);
   const f = (label, key, ph, req) => `<label class="field"><span>${label}${req ? '<span class="req">*</span>' : ""}</span>
     <input class="in" id="cf-${key}" value="${esc(cf[key] || "")}" placeholder="${esc(ph || "")}"
       onchange="A.cfSet('${key}',this.value)"></label>`;
@@ -1437,12 +2134,10 @@ function vCutForm() {
 
 
 /* ---------- 查看裁床单 ----------
- * 两张表：裁床汇总表（颜色×尺码的件数矩阵）和裁床编菲表（每一扎的扎号+件数）。
- * 编菲表按尺码分组，每组两列「扎号 / 数量」，跟纸质表的读法一致。
- */
+ * 两张表：裁床汇总表（颜色×尺码件数矩阵）和裁床编菲表（每扎扎号+件数，按尺码分组，双列扎号/数量）。 */
 function vCutView() {
   const d = state.cv;
-  if (!d) return `<div class="empty">加载中…</div>`;
+  if (!d) return skeletonHtml(4);
   const { order: o, bundles, processes, summary: sm } = d;
 
   // 编菲表：先按 (颜色,尺码) 把扎归堆，同一格里可能有好几扎，列数取最多的那一格
@@ -1452,9 +2147,7 @@ function vCutView() {
 
   return `<section class="group"><div class="card style-card">
       <div class="sc-head">
-        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}"
-            onclick="A.lightboxOne(this)" alt="款式图">`
-      : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        ${styleThumbHtml(o.style_id, o.style_image)}
         <div class="sc-info">
           <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
           <div class="sc-grid">
@@ -1513,16 +2206,11 @@ function vCutView() {
 
 
 
-/* ---------- 打印菲票 ----------
- * 份数 / 旋转180° / 逐个备注 / 公司名称 / 菲票备注 都是纯前端渲染参数，不进请求；
- * 只有扎号范围和任选扎号会传给后端（它要按范围取扎并生成二维码）。
- * 没有「打印机」选项，换成「纸张模板」——浏览器不能枚举/指定打印机，
- * 打印机由系统打印对话框选，这是 Web 的硬限制，不是功能缺失。
- */
+/* ---------- 打印菲票：只有扎号范围传给后端，其余是前端排版参数；打印机由系统对话框选 ---------- */
 const PRINT_TEMPLATES = [["label60x40", "标签 60×40mm"], ["label80x60", "标签 80×60mm"], ["a4grid", "A4 一页多张"]];
 function vCutPrint() {
   const cp = state.cp;
-  if (!cp) return `<div class="empty">加载中…</div>`;
+  if (!cp) return skeletonHtml(5);
   const o = cp.order;
   return `<section class="group"><div class="card">
       <div class="row-item"><div class="row-main">
@@ -1588,27 +2276,19 @@ function vCutPrint() {
     </section>`;
 }
 
-/* ---------- 生产进度（按扎） ----------
- * 三个容易混的口径，这里都要显示，不能互相顶替：
- *   已完成数  = 该扎各道工序完成件数的**最小值**（所有工序都过了、能出货的件数）
- *   进度条    = 做掉的工序件数 / 总工作量（件数 × 工序道数）—— 干了多少活
- *   x/y 道    = 已整扎做完的工序道数
- * 进度条以前走的是"整扎做完的工序道数/总道数"，那是个台阶函数：一道工序做到 19/20 件
- * 也还算 0 道，条子半天不动；换成按件数加权后每打一笔点都能看见在走。
- */
+/* ---------- 生产进度（按扎） ---------- */
+// 已完成数 = 各工序完成件数的最小值（能出货的）；进度条 = 工序件数 / 总工作量；x/y 道 = 整扎做完的工序数
 function vCutProgress() {
   const d = state.pg;
-  if (!d) return `<div class="empty">加载中…</div>`;
+  if (!d) return skeletonHtml(4);
   const o = d.order, procs = d.processes;
   const kw = (state.pgKw || "").trim();
-  const list = kw ? d.bundles.filter(b => String(b.bundle_no).includes(kw) || String(b.ticket_no).includes(kw)) : d.bundles;
+  const list = rankFilter(d.bundles, kw, b => [b.bundle_no, b.ticket_no, b.color, b.size]);
   const pct = d.work_percent || 0;                              // 进度条：工序件数进度
   const shipPct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;  // 能出货的件数占比
   return `<section class="group"><div class="card style-card">
       <div class="sc-head">
-        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}"
-            onclick="A.lightboxOne(this)" alt="款式图">`
-      : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        ${styleThumbHtml(o.style_id, o.style_image)}
         <div class="sc-info">
         <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
         <div class="sc-grid">
@@ -1637,8 +2317,7 @@ function vCutProgress() {
 
     <section class="group">
       <div class="group-title">每扎进展</div>
-      <div class="searchbar"><input id="pg-kw" placeholder="请输入扎号 / 菲票号" value="${esc(state.pgKw)}"
-        oninput="A.setPgKw(this.value)"></div>
+      ${searchbarHtml("pg-kw", state.pgKw, "扎号 / 菲票号 / 颜色 / 尺码", "A.setPgKw")}
       ${list.length ? list.map(b => `<div class="card bundle-card">
         <button class="row-item tap w-row" onclick="go('bundleprogress','${b.id}')">
           <div class="row-main">
@@ -1658,14 +2337,14 @@ function vCutProgress() {
         ${isManager() ? `<div class="qty-edit-row">
           <button class="act-btn" onclick="A.editBundleQty('${b.id}',${b.qty})">修改裁床件数</button>
           <button class="act-btn danger" onclick="A.delBundle('${b.id}',${b.bundle_no},${b.qty})">删除这一扎</button></div>` : ""}
-      </div>`).join("") : `<div class="card"><div class="empty">${kw ? "没有匹配的扎号" : "这张单还没有菲票"}</div></div>`}
+      </div>`).join("") : `<div class="card">${kw ? emptyHtml("没有匹配的扎号", "search") : emptyHtml("这张单还没有菲票", "cutting")}</div>`}
     </section>`;
 }
 
 /* ---------- 生产进度详情：一扎的每道工序 ---------- */
 function vBundleProgress() {
   const d = state.bp;
-  if (!d) return `<div class="empty">加载中…</div>`;
+  if (!d) return skeletonHtml(4);
   const b = d.bundle, o = d.order, procs = d.processes;
   const doneProcs = d.finished_procs, pct = d.work_percent || 0;
   return `<section class="group"><div class="card">
@@ -1705,7 +2384,7 @@ function vBundleProgress() {
 /* ---------- 工序进展：每道工序 + 颜色尺码分解 ---------- */
 function vProcProgress() {
   const d = state.pr;
-  if (!d) return `<div class="empty">加载中…</div>`;
+  if (!d) return skeletonHtml(4);
   return d.processes.length ? d.processes.map(p => `<section class="group">
       <div class="group-title">${esc(p.name)}</div>
       <div class="card">
@@ -1723,14 +2402,11 @@ function vProcProgress() {
             <td class="num">${num(x.total)}</td><td class="num">${num(x.done)}</td><td class="num">${num(x.remaining)}</td></tr>`).join("")}
         </table></div>
       </div>
-    </section>`).join("") : `<section class="group"><div class="card"><div class="empty">这张单还没有工序</div></div></section>`;
+    </section>`).join("") : `<section class="group"><div class="card">${emptyHtml("这张单还没有工序", "processes")}</div></section>`;
 }
 
 /* ---------- 生产管理 ----------
- * 概览卡（今日/昨日/本月已完成 + 当前生产中件数）+ 生产明细（按裁床单看 / 按款看）。
- * 已完成件数按"这段时间打点了多少件"算，跟单张单的完工口径不是一回事：
- * 前者是车间关心的日产出，后者是"这一扎所有工序都过了"才算数。
- */
+ * 已完成件数＝这段时间打点了多少件（车间日产出口径），不同于单张裁床单"全工序做完"的完工口径。 */
 function vCutOrders() {
   const co = state.co;
   const ov = co.overview || { completed: 0, inProduction: 0 };
@@ -1745,8 +2421,7 @@ function vCutOrders() {
     const pct = Number(o.percent) || 0;
     return `<section class="group"><div class="card cut-card">
       <div class="cc-head tap" onclick="go('cutprogress','${o.id}')">
-        ${showable(o.style_image) ? `<img class="sc-thumb" src="${esc(o.style_image)}" alt="款式图">`
-        : `<div class="sc-thumb sc-noimg" aria-hidden="true"></div>`}
+        ${styleThumbHtml(o.style_id, o.style_image)}
         <div class="sc-info">
           <div class="sc-title">款号：${esc(o.style_code || o.style_name || "—")}</div>
           <div class="sc-grid">
@@ -1784,8 +2459,7 @@ function vCutOrders() {
         <button class="${co.tab === "sheet" ? "on" : ""}" onclick="A.setCoTab('sheet')">按裁床单看</button>
         <button class="${co.tab === "style" ? "on" : ""}" onclick="A.setCoTab('style')">按款看</button>
       </div>
-      <div class="searchbar"><input id="co-kw" placeholder="请输入款号 / 床次" value="${esc(co.kw)}"
-        oninput="A.setCoKw(this.value)"></div>
+      ${searchbarHtml("co-kw", co.kw, "款号 / 款名 / 床次 / 制单号", "A.setCoKw")}
       <div class="daterange">
         <button class="dr-btn" onclick="A.toggleCoDate()">
           <span class="dr-label">裁床日期</span>
@@ -1806,24 +2480,21 @@ function vCutOrders() {
         <div class="sum-item"><div class="sum-num num">${num(totalQty)}</div><div class="sum-label">裁床总件数</div></div>
         <div class="sum-item"><div class="sum-num num">${num(doneQty)}</div><div class="sum-label">已完成件数</div></div>
       </div></section>
-      ${list === null ? `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`
+      ${list === null ? skeletonHtml(3)
       : list.length ? list.map(orderCard).join("")
-        : `<section class="group"><div class="card"><div class="empty">还没有裁床单，去「款式管理」里点「裁床编菲」新建</div></div></section>`}`
+        : `<section class="group"><div class="card">${emptyHtml("还没有裁床单，去「款式管理」里点「裁床编菲」新建", "cutting")}</div></section>`}`
     : `<section class="group"><div class="card">
-        ${byStyle === null ? `<div class="empty">加载中…</div>` : byStyle.length ? byStyle.map(x => `
+        ${byStyle === null ? skeletonHtml(3, false) : byStyle.length ? byStyle.map(x => `
           <div class="row-item">
             <div class="row-main"><div class="row-label">${esc(x.style_code || x.style_name)}</div>
               <div class="row-sub">${esc(x.style_name || "")} · ${x.sheet_count} 张裁床单</div></div>
             <div class="row-value num">${num(x.completed_qty)} / ${num(x.total_qty)}</div>
-          </div>`).join("") : `<div class="empty">暂无数据</div>`}
+          </div>`).join("") : emptyHtml("这段时间没有裁床单", "cutting")}
       </div></section>`}`;
 }
 
 /* ---------- 打点记录 ----------
- * 范围由后端按岗位定，前端只照着 scope 显示：
- *   计件工 / 临时工      → 只有自己打的点（不显示姓名，也没有人员筛选）
- *   分厂主管 / 工厂管理员 → 全员，多一排人员筛选和"谁打的"这一列
- */
+ * 范围由后端按岗位定：计件工/临时工只看自己的点；分厂主管/管理员看全员，多一列"谁打的"和人员筛选。 */
 const HHMM = (ms) => { const d = new Date(ms), p = n => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
 const shortName = (s) => (s || "").length > 2 ? s.slice(-2) : (s || "");
 
@@ -1859,7 +2530,7 @@ function vScanlog() {
     return `<section class="group"><div class="card">
       <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
     </div></section>
-    <section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+    ${skeletonHtml(4)}`;
   }
   // 人员筛选只列当天真打过点的人，不拉整张员工表——没打点的人摆在这里只会碍事
   const people = [];
@@ -1894,7 +2565,7 @@ function vScanlog() {
     <div class="group-title">${seeAll ? (who ? esc((people.find(x => x.id === who) || {}).name) + " 的打点" : "全员打点") : "我的打点"}
       · ${esc(fmtDate(sl.date))}${recs.length ? ` · ${recs.length} 笔` : ""}</div>
     <div class="card">${recs.length ? recs.map(r => slogRowHtml(r, seeAll && !who)).join("")
-      : `<div class="empty">${seeAll ? "这天还没有人打点" : "这天你还没有打点记录"}</div>`}</div>
+      : emptyHtml(seeAll ? "这天还没有人打点" : "这天你还没有打点记录", "scanlog")}</div>
   </section>`;
 }
 
@@ -1913,7 +2584,8 @@ function vAdmin() {
   if (!isManager()) return `<div class="card"><div class="empty">仅管理员或主管可访问</div></div>`;
   const kw = state.empKw.trim();
   const all = staffUsers();
-  const matched = kw ? all.filter(u => (u.name || "").includes(kw)) : all;
+  // 姓名、手机号都能搜（手机号搜尾号最常用），姓名完全相同的排最前
+  const matched = rankFilter(all, kw, u => [u.name, u.phone, u.roleLabel]);
   // 分页：每页 10 个。搜索关键词变化时会重置回第 1 页；筛完变短了也把页码收回有效范围
   const pages = Math.max(1, Math.ceil(matched.length / EMP_PAGE_SIZE));
   const page = Math.min(Math.max(1, state.empPage), pages);
@@ -1921,20 +2593,23 @@ function vAdmin() {
   const roles = state.roles || [];
   return `<section class="group">
     <div class="group-title">员工账号${state.users ? ` · 共 ${all.length} 人${kw ? `（匹配 ${matched.length} 人）` : ""}` : ""}</div>
-    <div class="searchbar"><input id="emp-kw" placeholder="搜索姓名" value="${esc(state.empKw)}" oninput="A.setEmpKw(this.value)"></div>
-    <div class="card"><div class="tbl-wrap"><table class="tbl">
-      <tr><th>姓名</th><th>手机号</th><th>岗位</th><th>操作</th></tr>
-      ${state.users === null ? `<tr><td colspan="4"><div class="empty">加载中…</div></td></tr>`
-      : users.length ? users.map(u => `<tr>
-        <td style="white-space:nowrap">${esc(u.name)}${u.id === me().id ? ` <span class="tag">我</span>` : ""}</td>
-        <td class="num">${esc(u.phone)}</td>
-        <td>${selectHtml("role-" + u.id, roleOptionsFor(u.role), u.role, `A.changeRole('${u.id}',this.value)`)}</td>
-        <td style="white-space:nowrap">
+    ${searchbarHtml("emp-kw", state.empKw, "搜姓名 / 手机号", "A.setEmpKw")}
+    <div class="card">
+      ${state.users === null ? skeletonHtml(4, false)
+      : users.length ? users.map(u => `<div class="emp-item">
+        <span class="avatar mini">${esc(shortName(u.name))}</span>
+        <div class="emp-main">
+          <div class="emp-name">${hl(u.name, kw)}${u.id === me().id ? ` <span class="tag">我</span>` : ""}</div>
+          <div class="emp-phone num">${hl(u.phone, kw)}</div>
+        </div>
+        <div class="emp-role">${selectHtml("role-" + u.id, roleOptionsFor(u.role), u.role, `A.changeRole('${u.id}',this.value)`)}</div>
+        <div class="emp-acts">
           <button class="act-btn" onclick="A.editUser('${u.id}')">编辑</button>
-          <button class="act-btn ghost" style="margin-left:6px" onclick="A.resetPw('${u.id}')">重置密码</button>
-          <button class="act-btn danger" style="margin-left:6px" onclick="A.delUser('${u.id}')">离职</button></td></tr>`).join("")
-        : `<tr><td colspan="4"><div class="empty">${kw ? "没有匹配的员工" : "还没有员工"}</div></td></tr>`}
-    </table></div></div>
+          <button class="act-btn ghost" onclick="A.resetPw('${u.id}')">重置密码</button>
+          <button class="act-btn danger" onclick="A.delUser('${u.id}')">离职</button></div>
+      </div>`).join("")
+        : kw ? emptyHtml("没有匹配的员工", "search") : emptyHtml("还没有员工，在下面新增", "employees")}
+    </div>
     ${pages > 1 ? `<div class="pager">
       <button class="act-btn ghost" ${page <= 1 ? "disabled" : ""} onclick="A.setEmpPage(${page - 1})">上一页</button>
       <span class="pager-info num">第 ${page} / ${pages} 页</span>
@@ -1945,8 +2620,8 @@ function vAdmin() {
   <section class="group">
     <div class="group-title">新增员工</div>
     <div class="card">
-      <label class="field"><span>姓名<span class="req">*</span></span><input class="in" id="nu-name"></label>
-      <label class="field"><span>手机号<span class="req">*</span></span><input class="in" id="nu-phone" inputmode="tel"></label>
+      <label class="field"><span>姓名<span class="req">*</span></span><input class="in" id="nu-name" autocomplete="off" placeholder="员工姓名"></label>
+      <label class="field"><span>手机号<span class="req">*</span></span><input class="in" id="nu-phone" inputmode="tel" maxlength="11" autocomplete="off" placeholder="11 位手机号，用来登录"></label>
       <label class="field"><span>岗位</span>${selectHtml("nu-role", roles.map(r => [r.k, r.label]), "worker")}</label>
       <label class="field"><span>初始密码</span><input class="in" id="nu-pass" value="123456"></label>
       <div class="btn-row"><button class="btn" onclick="A.addUser()">创建账号</button></div>
@@ -1954,12 +2629,8 @@ function vAdmin() {
   </section>`;
 }
 
-/* ---------- 薪资管理（工作台入口，仅管理员/主管可见） ---------- */
-/* ---------- 薪资管理 ----------
- * 一人一张卡：上面是姓名/岗位和应发合计，下面把四项拆成一行方格（计件是算出来的，
- * 餐补/奖金/扣罚是手工调整项）。原来这四项挤在一行小灰字里，看不出哪项是哪项，
- * 也看不出扣罚是往下减的。
- */
+/* ---------- 薪资管理（仅管理员/主管可见） ----------
+ * 一人一卡：姓名/岗位 + 应发合计，下面四格（计件是算出来的，餐补/奖金/扣罚是手工调整项，扣罚显示负号）。 */
 const PAY_CELLS = [
   ["pieceWage", "计件", ""], ["mealSubsidy", "餐补", ""],
   ["bonus", "奖金", ""], ["penalty", "扣罚", "minus"]
@@ -1970,7 +2641,7 @@ function vPayroll() {
     <label class="field"><span>月份</span>${monthFieldHtml("pay-month", state.pay.month, "A.setPayMonth(this.value)")}</label>
   </div></section>`;
   const raw = state.pay.list;
-  if (raw === null) return head + `<section class="group"><div class="card"><div class="empty">加载中…</div></div></section>`;
+  if (raw === null) return head + skeletonHtml(4);
 
   // 这个月一分钱都没有的人不铺满整页；真要给他加奖金，先改月份或者去「管理」页
   const list = raw.filter(it => it.total !== 0 || it.pieceWage !== 0)
@@ -1993,7 +2664,7 @@ function vPayroll() {
         <div class="pay-role">${esc(it.roleLabel || "")}</div>
       </div>
       <div class="pay-tot">
-        <div class="pay-tot-v num">¥${num(it.total)}</div>
+        <div class="pay-tot-v num">${money(it.total)}</div>
         <div class="pay-tot-l">应发</div>
       </div>
     </div>
@@ -2017,41 +2688,44 @@ function vPayroll() {
 
   return head + `
   <section class="group"><div class="sum-bar">
-    <div class="sum-item"><div class="sum-num num">${num(sum("total"))}</div><div class="sum-label">应发合计（元）</div></div>
-    <div class="sum-item"><div class="sum-num num">${num(sum("pieceWage"))}</div><div class="sum-label">计件合计（元）</div></div>
+    <div class="sum-item"><div class="sum-num num">${money(sum("total"))}</div><div class="sum-label">应发合计</div></div>
+    <div class="sum-item"><div class="sum-num num">${money(sum("pieceWage"))}</div><div class="sum-label">计件合计</div></div>
     <div class="sum-item"><div class="sum-num num">${list.length}</div><div class="sum-label">有工资的人数</div></div>
   </div></section>
 
   <section class="group">
     <div class="group-title">${esc(fmtMonth(state.pay.month))}工资</div>
-    ${list.length ? list.map(card).join("") : `<div class="card"><div class="empty">这个月还没有数据</div></div>`}
+    ${list.length ? list.map(card).join("") : `<div class="card">${emptyHtml("这个月还没有工资数据", "payroll")}</div>`}
   </section>`;
 }
 
 /* ---------- 我的 ---------- */
-// 手机端消息通知整页列表(桌面端等价功能是顶部铃铛下拉，见 deskBellHtml())
+// 消息通知整页（桌面端等价的是顶部铃铛面板）
 function vNotifs() {
-  const list = state.notif.list || [];
+  const list = state.notif.list;
   return `<section class="group">
-    <div class="card-pad" style="display:flex;justify-content:flex-end">${list.some(x => !x.read)
-      ? `<a href="javascript:void(0)" onclick="A.markAllNotifRead()">全部已读</a>` : ""}</div>
-    <div class="card">${list.length ? list.map(x => notifItemHtml(x, false)).join("") : `<div class="empty">暂无通知</div>`}</div>
+    <div class="group-title">消息通知${list ? ` · 共 ${list.length} 条` : ""}
+      ${(list || []).some(x => !x.read) ? `<button class="link-btn right" onclick="A.markAllNotifRead()">全部已读</button>` : ""}</div>
+    <div class="card">${list === null ? skeletonHtml(4, false) : list.length
+      ? list.map(n => notifItemHtml(n, { del: true })).join("") : emptyHtml("暂无通知", "inbox")}</div>
+    ${(list || []).some(x => x.read) ? `<div class="btn-row" style="padding-left:0;padding-right:0">
+      <button class="btn ghost block" onclick="A.clearReadNotifs()">清空已读通知</button></div>` : ""}
   </section>`;
 }
 function vMine() {
   const m = me(), p = state.pay.mine;
   const nm = m.name || "";
-  return `<section class="group"><div class="card"><div class="card-pad" style="display:flex;align-items:center;gap:14px">
-      <span class="avatar">${esc(nm.length > 2 ? nm.slice(-2) : nm)}</span>
-      <div><div style="font-size:19px;font-weight:600">${esc(nm)}</div>
+  return `<section class="group"><div class="card"><div class="card-pad me-card">
+      <span class="avatar">${esc(shortName(nm))}</span>
+      <div><div class="me-name">${esc(nm)}</div>
         <div class="row-sub">${esc(COMPANY_NAME)}</div></div>
     </div></div></section>
 
   <section class="group"><div class="card">
     <div class="row-item"><div class="row-main"><div class="row-label">职位</div></div><div class="row-value">${esc(roleLabelOf(m))}</div></div>
     <div class="row-item"><div class="row-main"><div class="row-label">手机</div></div><div class="row-value num">${esc(m.phone)}</div></div>
-    <div class="row-item" style="cursor:pointer" onclick="go('notifs')"><div class="row-main"><div class="row-label">消息通知</div></div>
-      <div class="row-value" style="display:flex;align-items:center;gap:6px">${state.notif.unread ? `<span class="badge">${state.notif.unread > 99 ? "99+" : state.notif.unread}</span>` : ""}<span class="chev">›</span></div></div>
+    <button class="row-item tap w-row" onclick="go('notifs')"><div class="row-main"><div class="row-label">消息通知</div></div>
+      <div class="row-value row-value-flex">${badgeHtml()}<span class="chev">›</span></div></button>
   </div></section>
 
   <section class="group">
@@ -2086,14 +2760,23 @@ function vMine() {
       <div class="row-item"><div class="row-main"><div class="row-label">餐补</div></div><div class="row-value num">${num(p.mealSubsidy)} 元</div></div>
       <div class="row-item"><div class="row-main"><div class="row-label">扣罚</div></div><div class="row-value num">${num(p.penalty)} 元</div></div>
       <div class="row-item"><div class="row-main"><div class="row-label">奖金</div></div><div class="row-value num">${num(p.bonus)} 元</div></div>
-      <div class="row-item"><div class="row-main"><div class="row-label">合计</div></div><span class="tag hl num">${num(p.total)} 元</span></div>`
-      : `<div class="empty">加载中…</div>`}</div>
+      <div class="row-item"><div class="row-main"><div class="row-label">合计</div></div><span class="tag hl num">${money(p.total)}</span></div>`
+      : skeletonHtml(3, false)}</div>
   </section>`}
 
   <section class="group"><div class="btn-row" style="padding-left:0;padding-right:0">
     ${(isStandalone() || !isMobileDevice()) ? "" : `<button class="btn ghost block" style="margin-bottom:10px" onclick="A.install()">📲 安装到手机</button>`}
     <button class="btn danger ghost block" onclick="A.logout()">退出登录</button>
   </div></section>`;
+}
+
+// 删除裁床单的确认弹窗，delCutOrder / delCutOrderFrom 共用，只是拿到 order 的方式和删除后的落点不同
+function confirmDelCutOrder(o, onDeleted) {
+  modal({
+    title: "删除裁床单", danger: true, okText: "删除",
+    body: o ? `确定删除「${o.style_code || o.style_name} · 床次${o.bed_no}」吗？这张单的 ${num(o.total_bundles)} 张菲票和进度都会一起看不到。` : "确定删除吗？",
+    onOk: () => { onDeleted(); return true; }
+  });
 }
 
 /* ================= 动作 ================= */
@@ -2108,86 +2791,184 @@ const A = {
   modalCancel() { modalState = null; renderModal(); },
 
   /* ---- 图片 ---- */
-  async addDraftPhotos(ctx, input) {
+  addDraftPhotos(ctx, input) {
     const files = [...(input.files || [])]; input.value = "";
+    A.addPhotoFiles(ctx, files);
+  },
+  // 选图 / 拖进来 / 粘贴 都走这里：先把缩略图占位摆上，压缩在后台排队做
+  addPhotoFiles(ctx, files) {
+    files = (files || []).filter(f => !f.type || /^image\//.test(f.type) || /\.(hei[cf]|jpe?g|png|webp|gif|bmp)$/i.test(f.name || ""));
     if (!files.length) return;
-    photoDraft[ctx] = photoDraft[ctx] || [];
-    let ok = 0, fail = 0;
-    for (let k = 0; k < files.length; k++) {
-      toast(`处理照片 ${k + 1}/${files.length}…`, true);
-      const uri = await compressImage(files[k]);
-      if (!uri) { fail++; continue; }
-      const used = photoDraft[ctx].reduce((s, u) => s + u.length, 0);
-      if (used + uri.length > IMG_LIMIT) { toast("图片总量超出上限，请先保存或删掉几张"); break; }
-      photoDraft[ctx].push(uri); ok++;
-    }
-    const el = $("pe-" + ctx); if (el) el.innerHTML = pickerInner(ctx);
-    toast(fail ? `已添加 ${ok} 张，${fail} 张失败` : `已添加 ${ok} 张`);
+    const list = photoDraft[ctx] = photoDraft[ctx] || [];
+    const room = PHOTO_MAX - list.length;
+    if (room <= 0) return toast(`最多 ${PHOTO_MAX} 张，先删掉几张再加`);
+    if (files.length > room) toast(`最多 ${PHOTO_MAX} 张，这次只加了前 ${room} 张`);
+    files.slice(0, room).forEach(f => {
+      let preview = "";
+      try { preview = URL.createObjectURL(f); } catch (e) { }
+      const it = { key: "p" + (++photoSeq), src: preview, data: "", status: "processing", file: f };
+      list.push(it);
+      queuePhoto(ctx, it);
+    });
+    refreshPicker(ctx);
   },
-  removeDraftPhoto(ctx, i) {
-    if (photoDraft[ctx]) { photoDraft[ctx].splice(i, 1); const el = $("pe-" + ctx); if (el) el.innerHTML = pickerInner(ctx); }
+  retryPhoto(ctx, key) {
+    const it = (photoDraft[ctx] || []).find(p => p.key === key);
+    if (!it || !it.file) return;
+    it.status = "processing"; it.err = "";
+    refreshPicker(ctx); queuePhoto(ctx, it);
   },
-  lightboxFromEl(el) {
-    const g = galleryReg[el.getAttribute("data-gallery")] || [];
-    if (!g.length) return;
-    lightbox = { photos: g, i: +el.getAttribute("data-i") || 0 }; renderLightbox();
+  removeDraftPhoto(ctx, key) {
+    const list = photoDraft[ctx] || [], k = list.findIndex(p => p.key === key);
+    if (k < 0) return;
+    const it = list[k];
+    if (String(it.src).indexOf("blob:") === 0) URL.revokeObjectURL(it.src);
+    list.splice(k, 1); refreshPicker(ctx);
+  },
+  viewDraft(ctx, key) {
+    const it = (photoDraft[ctx] || []).find(p => p.key === key);
+    if (!it) return;
+    if (it.status !== "ready") return openViewer([{ src: it.src }], 0);
+    const ready = draftReady(ctx);
+    openViewer(ready.map(p => ({ src: p.src })), ready.indexOf(it), { ctx });
+  },
+  // 列表里的款式图：先拿缩略图垫着立刻打开，原图取回来再换上（跟微信看图一样先糊后清）
+  viewStyle(styleId, el) {
+    const thumb = (el && el.getAttribute("src")) || "";
+    const count = Math.max(1, Number(el && el.getAttribute("data-count")) || 1);
+    const cached = fullImgCache.get(styleId);
+    if (cached && cached.length) return openViewer(cached.map((src, k) => ({ src, thumb: k === 0 ? thumb : "" })), 0, { styleId });
+    openViewer(Array.from({ length: count }, (_, k) => ({ src: "", thumb: k === 0 ? thumb : "" })), 0, { styleId });
+    api("GET", "/styles/" + encodeURIComponent(styleId)).then(r => {
+      const imgs = styleImages(r.style || {}).filter(showable);
+      cacheFullImgs(styleId, imgs);
+      if (!lightbox || lightbox.styleId !== styleId) return;
+      lightbox.photos = imgs.length ? imgs.map((src, k) => ({ src, thumb: k === 0 ? thumb : "" })) : [{ src: thumb }];
+      lightbox.i = Math.min(lightbox.i, lightbox.photos.length - 1);
+      renderLightbox();
+    }).catch(e => {
+      if (!lightbox || lightbox.styleId !== styleId) return;
+      toast((e && e.error) || "原图没取到，先看缩略图");
+      lightbox.photos = [{ src: thumb }]; lightbox.i = 0; renderLightbox();
+    });
   },
   lbStep(d) {
-    if (!lightbox) return;
-    const n = lightbox.photos.length;
-    lightbox.i = (lightbox.i + d + n) % n; renderLightbox();
+    if (!lightbox || !V.el) return;
+    const j = lightbox.i + d;
+    if (j < 0 || j >= lightbox.photos.length) return;
+    vAnim({ page: -d * (vSize().W + V.gap) }, null, () => { if (lightbox) { lightbox.i = j; layoutViewer(); } }, 0.3);
   },
   closeLightbox() { lightbox = null; renderLightbox(); },
+  lbSetCover() {
+    const lb = lightbox; if (!lb || !lb.ctx) return;
+    const it = draftReady(lb.ctx)[lb.i], list = photoDraft[lb.ctx] || [], k = list.indexOf(it);
+    if (k > 0) { list.splice(k, 1); list.unshift(it); }
+    refreshPicker(lb.ctx);
+    lb.photos = draftReady(lb.ctx).map(p => ({ src: p.src })); lb.i = 0;
+    layoutViewer(); toast("已设为封面");
+  },
+  lbDelete() {
+    const lb = lightbox; if (!lb || !lb.ctx) return;
+    const it = draftReady(lb.ctx)[lb.i];
+    if (it) A.removeDraftPhoto(lb.ctx, it.key);
+    const ready = draftReady(lb.ctx);
+    if (!ready.length) return A.closeLightbox();
+    lb.photos = ready.map(p => ({ src: p.src })); lb.i = Math.min(lb.i, ready.length - 1);
+    layoutViewer();
+  },
+
+  /* ---- 导航 ---- */
+  // 左上角"‹ 返回"：历史里有上一页就真的后退（跟手机返回键同一条路，滚动位置也能恢复），
+  // 是直接打开的深链接（没有上一页）就去逻辑上的上级页
+  navBack(parent) {
+    const st = history.state || {};
+    if ((st.depth || 0) > 0 && !H.pending) history.back();
+    else go(parent, null, { replace: true });
+  },
 
   /* ---- 登录 ---- */
-  async login() {
-    const phone = val("lg-phone"), pass = ($("lg-pass") || {}).value || "";
-    if (!phone || !pass) return toast("请填写手机号和密码");
-    try {
-      const r = await api("POST", "/login", { phone, password: pass });
-      await A.enter(r.token, r.user);
-    } catch (e) {
-      if (showWelcome) { showWelcome = false; render(); }
-      toast((e && e.error) || "登录失败");
-    }
+  login() {
+    return guard("login", async () => {
+      const phone = val("lg-phone"), pass = ($("lg-pass") || {}).value || "";
+      if (!phone || !pass) return toast("请填写手机号和密码");
+      try {
+        const r = await api("POST", "/login", { phone, password: pass });
+        await A.enter(r.token, r.user);
+      } catch (e) {
+        if (showWelcome) { showWelcome = false; render(); }
+        toast((e && e.error) || "登录失败");
+      }
+    });
   },
   async enter(token, user) {
     state.token = token; state.me = user;
     localStorage.setItem(TOKEN_KEY, token);
     showWelcome = true; render();           // 密码验证通过就先顶上欢迎界面，不用等数据回来
-    route = { v: "home", id: null };
-    await Promise.all([loadView("home").catch(() => { }), new Promise(r => setTimeout(r, 1200))]);
+    // 没登录时点了推送/深链接进来的，登录完直接去那一页
+    const target = bootTarget || { v: "home", id: null };
+    bootTarget = null;
+    route = target;
+    if (history.replaceState) history.replaceState({ v: target.v, id: target.id, depth: 0 }, "", routeUrl(target.v, target.id));
+    await Promise.all([loadView(target.v).catch(() => { }), new Promise(r => setTimeout(r, 1200))]);
     showWelcome = false; render();
     startNotifPoll();
   },
   dismissWelcome() { if (!showWelcome) return; showWelcome = false; render(); },
 
-  /* ---- 应用内通知(桌面端顶部铃嘴面板) ---- */
-  async toggleNotifPanel() {
-    notifPanelOpen = !notifPanelOpen;
-    if (notifPanelOpen) {
-      try { state.notif.list = (await api("GET", "/notifications")).list || []; } catch (e) { }
-    }
+  /* ---- 应用内通知 ---- */
+  async loadNotifs() {
+    try { state.notif.list = (await api("GET", "/notifications")).list || []; }
+    catch (e) { if (!state.notif.list) state.notif.list = []; }
     render();
   },
-  async openNotif(id, link) {
+  toggleNotifPanel() {
+    notifPanelOpen = !notifPanelOpen;
+    render();
+    if (notifPanelOpen) A.loadNotifs();
+  },
+  // 点一条通知：标已读（先改界面，请求在后台发），有链接就跳过去
+  openNotif(id, link) {
     notifPanelOpen = false;
-    try {
-      await api("POST", `/notifications/${id}/read`);
-      const item = (state.notif.list || []).find(x => x.id === id);
-      if (item && !item.read) { item.read = true; state.notif.unread = Math.max(0, state.notif.unread - 1); }
-    } catch (e) { }
-    // 链接可以是 "/payroll" 这种纯页面，也可以是 "/cutprogress/<单id>" 这种带对象 id 的
-    if (link) { const [v, id] = link.replace(/^\//, "").split("/"); go(v, id || null); }
+    const item = (state.notif.list || []).concat(state.notif.recent || []).find(x => x.id === id);
+    if (item && !item.read) {
+      [state.notif.list, state.notif.recent].forEach(l => (l || []).forEach(x => { if (x.id === id) x.read = true; }));
+      state.notif.unread = Math.max(0, state.notif.unread - 1); updateBadges();
+      api("POST", `/notifications/${id}/read`).catch(() => { });
+    }
+    if (link) { const parts = link.replace(/^\//, "").split("/"); go(parts[0], parts[1] || null); }
     else render();
   },
   async markAllNotifRead() {
     try {
       await api("POST", "/notifications/read-all");
-      (state.notif.list || []).forEach(x => x.read = true);
-      state.notif.unread = 0;
-    } catch (e) { }
-    render();
+      [state.notif.list, state.notif.recent].forEach(l => (l || []).forEach(x => { x.read = true; }));
+      state.notif.unread = 0; updateBadges();
+      render(); toast("已全部标为已读");
+    } catch (e) { toast((e && e.error) || "操作失败"); }
+  },
+  // 删除只影响自己：通知本来就是一人一份
+  async deleteNotif(id) {
+    try {
+      await api("DELETE", "/notifications/" + id);
+      const n = (state.notif.list || []).concat(state.notif.recent || []).find(x => x.id === id);
+      if (n && !n.read) { state.notif.unread = Math.max(0, state.notif.unread - 1); updateBadges(); }
+      if (state.notif.list) state.notif.list = state.notif.list.filter(x => x.id !== id);
+      if (state.notif.recent) state.notif.recent = state.notif.recent.filter(x => x.id !== id);
+      render();
+    } catch (e) { toast((e && e.error) || "删除失败"); }
+  },
+  clearReadNotifs() {
+    modal({
+      title: "清空已读通知？", body: "只删除你自己已读过的通知，未读的会保留。", danger: true, okText: "清空",
+      onOk: () => {
+        api("DELETE", "/notifications?read=1").then(() => {
+          state.notif.list = (state.notif.list || []).filter(x => !x.read);
+          if (state.notif.recent) state.notif.recent = state.notif.recent.filter(x => !x.read);
+          render(); toast("已清空已读通知");
+        }).catch(e => toast((e && e.error) || "操作失败"));
+        return true;
+      }
+    });
   },
   logout() {
     modal({
@@ -2198,18 +2979,23 @@ const A = {
   // 登录状态不过期：只有这里（主动退出）和后端返回 401 时才会清掉本地 token
   forceLogout() {
     stopNotifPoll();
+    if (state.scan.camOn) A.stopCamera();
     state.token = null; state.me = null;
     // 把上一个账号的数据一并清掉，换账号登录时不会先闪一下别人的数据
     state.users = state.roles = state.processes = state.styles = state.styleOptions = null;
     state.home = { today: 0 };
-    state.notif = { unread: 0, list: null };
+    state.notif = { unread: 0, list: null, recent: null };
     state.scan.records = state.scan.eff = null;
     state.att.userId = ""; state.att.records = null;
     state.eff.list = null; state.slog.records = null;
     state.pay.list = state.pay.mine = null; state.pay.editing = "";
-    styleForm = null; photoDraft = {};
+    styleForm = null; photoDraft = {}; state.tplEditing = null;
+    lightbox = null; renderLightbox(); modalState = null; renderModal();
+    fullImgCache.clear();
     localStorage.removeItem(TOKEN_KEY);
-    route = { v: "home", id: null }; render();
+    route = { v: "home", id: null };
+    if (history.replaceState) history.replaceState({ v: "home", id: null, depth: 0 }, "", "/");
+    render();
   },
 
   /* ---- 安装到主屏 ---- */
@@ -2252,12 +3038,12 @@ const A = {
   syncDateLabel(id) {
     const el = $(id), lab = $(id + "--label"); if (!el || !lab) return;
     lab.textContent = el.value ? fmtDate(el.value) : "选择日期";
-    lab.classList.toggle("empty", !el.value);
+    lab.classList.toggle("is-empty", !el.value);
   },
   syncMonthLabel(id) {
     const el = $(id), lab = $(id + "--label"); if (!el || !lab) return;
     lab.textContent = el.value ? fmtMonth(el.value) : "选择月份";
-    lab.classList.toggle("empty", !el.value);
+    lab.classList.toggle("is-empty", !el.value);
   },
   _monthCb: {},
   // 老浏览器的「年+月」两个下拉：拼出 yyyy-MM 塞进隐藏 input，再跑那个字段原本的 onchange
@@ -2271,43 +3057,64 @@ const A = {
 
   /* ---- 打点 ---- */
   setScanDate(v) { if (!v) return; state.scan.date = v; state.scan.records = null; go("scan"); },
-  async submitScan() {
-    const procs = state.processes || [];
-    if (!procs.length) return toast("请先添加工序模板");
-    const qty = val("sc-qty");
-    if (!qty) return toast("请填写完成数量");
-    const styleId = val("sc-style");
-    await run(() => api("POST", "/scan", {
-      processId: val("sc-proc"), styleId: styleId || undefined, date: state.scan.date, qty: Number(qty)
-    }), "已打点");
+  submitScan() {
+    return guard("submitScan", async () => {
+      const procs = state.processes || [];
+      if (!procs.length) return toast("请先添加工序模板");
+      const qty = val("sc-qty");
+      if (!qty) return toast("请填写完成数量");
+      if (!(Number(qty) > 0)) return toast("完成数量要大于 0");
+      const styleId = val("sc-style");
+      const r = await run(() => api("POST", "/scan", {
+        processId: val("sc-proc"), styleId: styleId || undefined, date: state.scan.date, qty: Number(qty)
+      }), "已打点");
+      if (r) buzz(30);
+    });
   },
-  delScan(id) { run(() => api("DELETE", "/scan/" + id), "已删除"); },
+  // 删打点记录会直接影响工资，先确认，而且把删的是哪一笔说清楚
+  delScan(id) {
+    const r = (state.scan.records || []).find(x => x.id === id);
+    modal({
+      title: "删除这条打点？", danger: true, okText: "删除",
+      body: r ? `${r.process_name || "工序"} ${num(r.qty)} 件${r.bundle_no ? `（扎号 ${r.bundle_no}）` : ""}，删除后对应的计件工资也会扣掉。` : "删除后对应的计件工资也会扣掉。",
+      onOk: () => { run(() => api("DELETE", "/scan/" + id), "已删除"); return true; }
+    });
+  },
 
   /* ---- 工序模板 ---- */
 
   /* ---- 款式 ---- */
   newStyle() {
     photoDraft = { style: [] };
-    styleForm = { id: "", name: "", code: "", customer: "", size: {}, color: {}, err: {} };
+    styleForm = { id: "", name: "", code: "", customer: "", size: {}, color: {}, err: {}, origImages: [] };
     state.pe = { styleId: null, mode: "default", sizes: [], roles: [], items: [] };
+    formSnap.base = formSnap();
     render(); window.scrollTo(0, 0);
     // 新建款式也可能要按岗位设可见性，异步把岗位列表补上（普通员工没有权限就留空，不阻塞表单）
     api("GET", "/roles").then(r => { if (state.pe) { state.pe.roles = r.roles || []; render(); } }).catch(() => {});
   },
   async editStyle(id) {
     const s = (state.styles || []).find(x => x.id === id); if (!s) return;
-    photoDraft = { style: styleImages(s) };
+    // 列表里只有缩略图；原图单独取。取回来之前先按张数摆"加载中"的占位，不让人以为图没了
+    photoDraft = { style: Array.from({ length: s.image_count || 0 }, () => ({ key: "p" + (++photoSeq), src: "", data: "", status: "processing" })) };
     const size = {}, color = {};
     String(s.size || "").split(",").forEach(x => { if (x) size[x] = true; });
     String(s.color || "").split(",").forEach(x => { if (x) color[x] = true; });
-    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, err: {} };
+    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, err: {}, origImages: null };
     state.pe = { styleId: s.id, mode: "default", sizes: String(s.size || "").split(",").filter(Boolean), roles: [], items: [] };
+    formSnap.base = null;
     render(); window.scrollTo(0, 0);
     try {
-      const [r, roleRes] = await Promise.all([
+      const [r, roleRes, full] = await Promise.all([
         api("GET", `/styles/${id}/processes`),
-        api("GET", "/roles").catch(() => ({ roles: [] }))
+        api("GET", "/roles").catch(() => ({ roles: [] })),
+        api("GET", `/styles/${id}`)
       ]);
+      if (!styleForm || styleForm.id !== id) return;          // 等的时候已经退出了编辑
+      const imgs = styleImages(full.style || {});
+      cacheFullImgs(id, imgs.filter(showable));
+      styleForm.origImages = imgs;
+      photoDraft.style = imgs.map(photoItem);
       state.pe = {
         styleId: s.id,
         mode: (r.list[0] && r.list[0].price_mode) || "default",
@@ -2318,10 +3125,15 @@ const A = {
           prices: x.prices || {}, showPrice: x.show_price !== false, visibleRoles: x.visible_roles || []
         }))
       };
+      formSnap.base = formSnap();
       render();
-    } catch (e) { toast((e && e.error) || "工序加载失败"); }
+    } catch (e) {
+      // 原图没取到：图片区清空并锁住"不改图"，保存时不带图片字段，免得把库里的图覆盖成空
+      if (styleForm && styleForm.id === id && !styleForm.origImages) { photoDraft.style = []; styleForm.imagesLocked = true; }
+      render(); toast((e && e.error) || "款式数据加载失败");
+    }
   },
-  cancelStyle() { styleForm = null; state.pe = null; photoDraft = {}; render(); },
+  cancelStyle() { styleForm = null; state.pe = null; photoDraft = {}; formSnap.base = null; render(); },
   // 表单里有多处操作会触发重绘（选尺码/颜色、加工序…），重绘前先把输入框里的内容存回 styleForm
   syncStyleForm() {
     if (!styleForm) return;
@@ -2330,16 +3142,9 @@ const A = {
   },
 
   /* ---- 款式尺码/颜色/客户 选项控件 ---- */
-  setStyleKw(v) {
-    // 只改 state 不重绘：重绘会让输入框失焦，中文输入法直接被打断
-    state.styleKw = v;
-    clearTimeout(A._stT);
-    A._stT = setTimeout(() => { render(); const el = $("st-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 250);
-  },
+  setStyleKw: debouncedSearch("_stT", "st-kw", 250, (v) => { state.styleKw = v; }),
 
-  // 同步工序：把款式当前的工序整套推到选中的裁床单上。
-  // 裁床单的工序是下单时的快照，改款式工序默认不影响已建的单（否则改一次价会追溯改掉历史工资），
-  // 所以要在这里显式选床次。
+  // 同步工序：裁床单的工序是下单时的快照（改价不追溯历史工资），要生效得在这里选单同步
   async openSyncProcs(styleId) {
     let r;
     try { r = await api("GET", `/styles/${styleId}/syncable-orders`); }
@@ -2374,18 +3179,13 @@ const A = {
   },
   toggleSyncPick(id, on) { if (on) state.syncPick.add(id); else state.syncPick.delete(id); },
 
-  // 单张款式图的灯箱：卡片上的缩略图点开看大图，复用已有的画廊机制
-  lightboxOne(el) {
-    const k = regGallery([el.getAttribute("src")]);
-    el.setAttribute("data-gallery", k); el.setAttribute("data-i", "0");
-    A.lightboxFromEl(el);
-  },
 
   /* ---------- 工序模板（整套工序清单） ---------- */
   // 编辑器组件读的是 state.pe，所以进出编辑态时要把模板内容搬进/搬出 state.pe
   tplNew() {
     state.tplEditing = { id: null, name: "" };
     state.pe = { styleId: null, mode: "default", sizes: [], roles: state.tplRoles || [], items: [] };
+    formSnap.base = formSnap();
     render();
   },
   tplEdit(id) {
@@ -2404,9 +3204,10 @@ const A = {
         prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
       }))
     };
+    formSnap.base = formSnap();
     render();
   },
-  tplCancel() { state.tplEditing = null; state.pe = null; render(); },
+  tplCancel() { state.tplEditing = null; state.pe = null; formSnap.base = null; render(); },
   async tplSave() {
     A.syncTplName();
     const name = String((state.tplEditing && state.tplEditing.name) || "").trim();
@@ -2418,7 +3219,7 @@ const A = {
       // 后端没有"改模板"的接口，编辑就是删旧建新——模板是一坨值，没有需要保留的引用关系
       if (cur.id) await api("DELETE", "/process-templates/" + cur.id);
       await api("POST", "/process-templates", { name, items });
-      state.tplEditing = null; state.pe = null;
+      state.tplEditing = null; state.pe = null; formSnap.base = null;
       await loadView("processes"); render();
       toast(cur.id ? "模板已保存" : "模板已创建");
     } catch (e) { toast((e && e.error) || "保存失败"); }
@@ -2467,7 +3268,7 @@ const A = {
 
   /* ---------- 扫菲打点（按扎） ---------- */
   setTicketInput(v) { state.scan.ticketInput = v; },
-  async lookupTicket() {
+  async lookupTicket(opt) {
     // DOM 里有值就以 DOM 为准（用户刚打的字还没失焦）；DOM 是空的就用 state
     // ——摄像头扫到码时是直接写 state 的，不能被空输入框清掉
     const el = $("sc-ticket");
@@ -2480,33 +3281,44 @@ const A = {
       state.scan.bundle = r.bundle; state.scan.bundleOrder = r.order; state.scan.bundleProcs = r.processes;
     } catch (e) {
       state.scan.bundle = null; state.scan.bundleOrder = null; state.scan.bundleProcs = null;
+      buzz([40, 60, 40]);
       toast((e && e.error) || "查不到这张菲票");
     }
     render();
+    // 扫码进来的：把结果卡片滚到眼前，不用自己往下找
+    if (opt && opt.scroll && state.scan.bundle) {
+      setTimeout(() => { const el = $("scan-result"); if (el) el.scrollIntoView({ block: "start", behavior: REDUCED_MOTION ? "auto" : "smooth" }); }, 60);
+    }
   },
-  async scanBundleSubmit(orderProcessId) {
-    const el = $("sq-" + orderProcessId);
-    const raw = el ? el.value.trim() : "";
-    try {
-      await api("POST", "/scan", {
-        ticketNo: state.scan.bundle.ticket_no, orderProcessId,
-        qty: raw === "" ? undefined : Number(raw),   // 不填就是完成整扎剩余
-        date: state.scan.date
-      });
-      toast("已打点");
-      await A.lookupTicket();          // 重新拉一次，剩余件数立刻刷新
-      await loadView("scan"); render();
-    } catch (e) { toast((e && e.error) || "打点失败"); }
+  scanBundleSubmit(orderProcessId) {
+    return guard("scan-" + orderProcessId, async () => {
+      const el = $("sq-" + orderProcessId);
+      const raw = el ? el.value.trim() : "";
+      if (raw !== "" && !(Number(raw) > 0)) return toast("件数要大于 0");
+      try {
+        const r = await api("POST", "/scan", {
+          ticketNo: state.scan.bundle.ticket_no, orderProcessId,
+          qty: raw === "" ? undefined : Number(raw),   // 不填就是完成整扎剩余
+          date: state.scan.date
+        });
+        buzz(30);
+        toast(r && r.remaining === 0 ? `已打点 ${num(r.record.qty)} 件，这道工序整扎做完了` : `已打点 ${num(r.record.qty)} 件`);
+        await A.lookupTicket();          // 重新拉一次，剩余件数立刻刷新
+        await loadView("scan"); render();
+      } catch (e) { buzz([40, 60, 40]); toast((e && e.error) || "打点失败"); }
+    });
   },
 
+  /* 摄像头扫码性能：jsQR 耗时与像素数成正比，先只解取景框附近的裁切区域（ROI，更快也更容易识别小码），
+   * 每隔几帧再解整帧兜底；反色（黑底白码）少见，每 4 帧才试一次，省一半耗时。 */
   async startCamera() {
     const sc = state.scan;
     if (sc.camOn) { A.stopCamera(); return; }
-    // 先把取景区渲染出来，之后拿到视频流就不能再 render() 了 ——
-    // render() 用 innerHTML 重建整个 #app，刚绑好 srcObject 的 <video> 会被换成一个空元素，
-    // 流还在跑（iOS 状态栏有红点）但画面全黑，jsQR 读到的 videoWidth 也是 0。
-    // 所以开机之后所有提示都直接改 DOM，不走 render。
+    // 先渲染取景区；拿到视频流后不能再 render()（会把绑好流的 <video> 换掉导致黑屏），提示都直接改 DOM
     sc.camOn = true; sc.camMsg = "正在打开摄像头…"; render();
+    const session = A._camSession = (A._camSession || 0) + 1;       // 关了又开，旧的那一轮循环要能认出自己已作废
+    // 提示音要在用户点按的那一刻创建 AudioContext，否则 iOS 不让出声
+    try { if (!A._beepCtx && (window.AudioContext || window.webkitAudioContext)) A._beepCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { }
 
     const setMsg = (t) => {
       state.scan.camMsg = t;
@@ -2522,7 +3334,7 @@ const A = {
         v.setAttribute("playsinline", "");   // iOS 不加这个会强制全屏播放
         v.muted = true;
         const pr = v.play();
-        if (pr && pr.catch) pr.catch(() => {});
+        if (pr && pr.catch) pr.catch(() => { });
       }
       return v;
     };
@@ -2532,8 +3344,18 @@ const A = {
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
+      if (A._camSession !== session || !state.scan.camOn) { stream.getTracks().forEach(t => t.stop()); return; }
       A._camStream = stream;
       if (!attach(stream)) { A.stopCamera(); return; }
+
+      // 手电筒 / 连续对焦：只有部分安卓机型支持，拿得到能力才露出按钮
+      const track = stream.getVideoTracks()[0];
+      A._torchOn = false;
+      try {
+        const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+        if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => { });
+        const tb = $("scan-torch"); if (tb && caps.torch) tb.hidden = false;
+      } catch (e) { }
 
       const detector = HAS_NATIVE_SCAN ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
       if (!detector && !window.jsQR) {
@@ -2545,21 +3367,32 @@ const A = {
         }).catch(() => { toast("扫码组件加载失败，请手动输入扎号"); });
       }
       const jsQR = window.jsQR;
-      setMsg("把菲票上的二维码对准取景框");
+      setMsg("把菲票上的二维码放进框里");
 
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      let lastBad = "", lastBadAt = 0;
       const hit = (raw) => {
-        if (!/^JJ:\d+$/i.test(raw || "")) return false;
+        if (!/^JJ:\d+$/i.test(raw || "")) {
+          // 扫到了别的码（客户条码、网址）：提示一次，别每帧都刷
+          if (raw && (raw !== lastBad || Date.now() - lastBadAt > 3000)) { lastBad = raw; lastBadAt = Date.now(); setMsg("这不是本系统的菲票码，请对准菲票上的二维码"); }
+          return false;
+        }
+        buzz(60); A._beep();
         state.scan.ticketInput = raw.replace(/^JJ:/i, "");
         A.stopCamera();
-        A.lookupTicket();
+        A.lookupTicket({ scroll: true });
         return true;
       };
 
-      let waited = 0;
+      let frame = 0, waited = 0;
+      const next = (video) => {
+        if (A._camSession !== session || !state.scan.camOn) return;
+        if (video && video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => { A._camTimer = setTimeout(tick, detector ? 60 : 90); });
+        else A._camTimer = setTimeout(tick, detector ? 120 : 160);
+      };
       const tick = async () => {
-        if (!state.scan.camOn) return;
+        if (A._camSession !== session || !state.scan.camOn) return;
         const video = attach(stream);
         if (!video) { A.stopCamera(); return; }
         // 刚打开时 videoWidth 还是 0，要等第一帧解码出来
@@ -2569,23 +3402,27 @@ const A = {
           A._camTimer = setTimeout(tick, 150);
           return;
         }
+        frame++;
         try {
           if (detector) {
             const codes = await detector.detect(video);
             for (const c of codes) if (hit(c.rawValue)) return;
           } else if (jsQR) {
-            // jsQR 吃像素数组，先把这一帧画到 canvas。缩到最长边 640：
-            // 全分辨率解一帧在手机上要几百毫秒，缩了既跟手又够清晰。
-            const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
-            canvas.width = Math.round(video.videoWidth * scale);
-            canvas.height = Math.round(video.videoHeight * scale);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const vw = video.videoWidth, vh = video.videoHeight;
+            // 每 3 帧里 2 帧只解中间的方块（取景框附近，比框大一圈留余量），第 3 帧解整帧兜底
+            const roi = frame % 3 !== 0;
+            const side = Math.min(vw, vh) * 0.8;
+            const sx = roi ? (vw - side) / 2 : 0, sy = roi ? (vh - side) / 2 : 0;
+            const sw = roi ? side : vw, sh = roi ? side : vh;
+            const scale = Math.min(1, (roi ? 480 : 640) / Math.max(sw, sh));
+            canvas.width = Math.round(sw * scale); canvas.height = Math.round(sh * scale);
+            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+            const code = jsQR(img.data, img.width, img.height, { inversionAttempts: frame % 4 === 0 ? "attemptBoth" : "dontInvert" });
             if (code && hit(code.data)) return;
           }
         } catch (e) { /* 单帧解不出来无所谓，下一帧继续 */ }
-        A._camTimer = setTimeout(tick, detector ? 120 : 180);
+        next(video);
       };
       tick();
     } catch (e) {
@@ -2599,9 +3436,32 @@ const A = {
     }
   },
   stopCamera() {
+    A._camSession = (A._camSession || 0) + 1;
     clearTimeout(A._camTimer); A._camTimer = null;
     if (A._camStream) { A._camStream.getTracks().forEach(t => t.stop()); A._camStream = null; }
+    A._torchOn = false;
     state.scan.camOn = false; state.scan.camMsg = ""; render();
+  },
+  async toggleTorch() {
+    const track = A._camStream && A._camStream.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      A._torchOn = !A._torchOn;
+      await track.applyConstraints({ advanced: [{ torch: A._torchOn }] });
+      const b = $("scan-torch"); if (b) { b.classList.toggle("on", A._torchOn); b.setAttribute("aria-pressed", String(A._torchOn)); }
+    } catch (e) { A._torchOn = false; toast("这台手机不支持在网页里开手电筒"); }
+  },
+  // 扫到码的"嘀"：1.2kHz、80ms，音量压低，车间里听得见又不刺耳
+  _beep() {
+    const ac = A._beepCtx;
+    if (!ac) return;
+    try {
+      if (ac.state === "suspended") ac.resume();
+      const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+      o.type = "sine"; o.frequency.value = 1200;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.18, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+      o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t + 0.09);
+    } catch (e) { }
   },
 
   /* ---------- 打印菲票 ---------- */
@@ -2671,9 +3531,7 @@ const A = {
     root.className = "tpl-" + cp.template;
     root.innerHTML = html.join("");
     toast(`已排版 ${bundles.length} 张菲票 × ${copies} 份`);
-    // 排版好就停在这里，不自动调 print()：Safari（尤其 iOS）会把"不是用户手势直接触发的
-    // print()"判定成自动打印并拦下来，弹一个"已阻止此网站进行自动打印"。
-    // 改成露出一个按钮，用户点它时在手势的调用栈里直接调 print()，不会被任何浏览器拦。
+    // 不自动 print()：Safari 会拦下非用户手势触发的打印，改成露出按钮让用户点
     state.cp.ready = { count: bundles.length, copies };
     render();
     // 滚到按钮那儿，免得用户不知道还要再点一下
@@ -2681,14 +3539,7 @@ const A = {
   },
 
   /* ---------- 生产进度 ---------- */
-  setPgKw(v) {
-    state.pgKw = v;
-    clearTimeout(A._pgT);
-    A._pgT = setTimeout(() => {
-      render();
-      const el = $("pg-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
-    }, 250);
-  },
+  setPgKw: debouncedSearch("_pgT", "pg-kw", 250, (v) => { state.pgKw = v; }),
   // 删掉裁床单里单独的一扎：排错了一扎、或某个颜色尺码不做了，不用整张单重排。
   // 已经打过点的扎后端会拒（那等于把工人做过的活连工资一起抹掉）。
   delBundle(id, bundleNo, qty, backToOrderId) {
@@ -2728,6 +3579,7 @@ const A = {
   cfSet(k, v) { state.cf[k] = v; },
   cfToggleCust() { state.cf.custOpen = !state.cf.custOpen; state.cf.custKw = ""; render(); },
   cfCustSearch(v) {
+    if (A._ime) return;
     state.cf.custKw = v; render();
     const el = document.querySelector(".optbox.open .opt-search");
     if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
@@ -2743,7 +3595,7 @@ const A = {
     try {
       await api("POST", "/style-options", { type: "customer", value });
       const o = await api("GET", "/style-options");
-      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      setStyleOptions(o);
       state.cf.customer = value; state.cf.custKw = ""; state.cf.custOpen = false;
       render(); toast("已新增客户");
     } catch (e) { toast((e && e.error) || "新增失败"); }
@@ -2831,6 +3683,7 @@ const A = {
   // 所以这两个包一层：先保证列表里有这张单的数据，再复用原来的弹窗
   async ensureCoOrder(id) {
     if ((state.co.list || []).some((o) => o.id === id)) return;
+    if (state.cv && state.cv.order && state.cv.order.id === id) { state.co.list = [...(state.co.list || []), state.cv.order]; return; }
     try {
       const r = await api("GET", "/cut-orders?limit=200");
       state.co.list = r.list || [];
@@ -2843,32 +3696,17 @@ const A = {
   async delCutOrderFrom(id) {
     await A.ensureCoOrder(id);
     const o = (state.co.list || []).find((x) => x.id === id);
-    modal({
-      title: "删除裁床单", danger: true, okText: "删除",
-      body: o ? `确定删除「${o.style_code || o.style_name} · 床次${o.bed_no}」吗？这张单的 ${num(o.total_bundles)} 张菲票和进度都会一起看不到。` : "确定删除吗？",
-      onOk: () => {
-        // 删完这张单，详情页已经没有东西可看了，回生产管理列表
-        (async () => {
-          try { await api("DELETE", "/cut-orders/" + id); toast("已删除"); go("cutorders"); }
-          catch (e) { toast((e && e.error) || "删除失败"); }
-        })();
-        return true;
-      }
+    confirmDelCutOrder(o, async () => {
+      // 删完这张单，详情页已经没有东西可看了，回生产管理列表
+      try { await api("DELETE", "/cut-orders/" + id); toast("已删除"); go("cutorders"); }
+      catch (e) { toast((e && e.error) || "删除失败"); }
     });
   },
 
   /* ---------- 生产管理 ---------- */
   setCoRange(k) { state.co.range = k; run(() => Promise.resolve()); },
   setCoTab(k) { state.co.tab = k; render(); },
-  setCoKw(v) {
-    // 跟款式搜索一样：先只改 state，防抖之后再重绘，否则每敲一个字输入框就失焦
-    state.co.kw = v;
-    clearTimeout(A._coT);
-    A._coT = setTimeout(async () => {
-      await loadView("cutorders"); render();
-      const el = $("co-kw"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
-    }, 300);
-  },
+  setCoKw: debouncedSearch("_coT", "co-kw", 300, (v) => { state.co.kw = v; }, () => loadView("cutorders")),
   toggleCoDate() { state.co.dateOpen = !state.co.dateOpen; render(); },
   setCoDate(which, v) { state.co[which] = v; run(() => Promise.resolve()); },
   clearCoDate() { state.co.from = ""; state.co.to = ""; run(() => Promise.resolve()); },
@@ -2887,7 +3725,7 @@ const A = {
           <div class="row-main"><div class="row-label" style="color:var(--bad-ink)">删除裁床单</div>
             <div class="row-sub">删除后这张单的进度也一并看不到了</div></div></button>
       </div>`,
-      okText: "取消", onOk: () => true
+      cancelOnly: true, cancelText: "取消"
     });
   },
   async editCutOrder(id) {
@@ -2913,11 +3751,7 @@ const A = {
   },
   delCutOrder(id) {
     const o = (state.co.list || []).find(x => x.id === id);
-    modal({
-      title: "删除裁床单", danger: true, okText: "删除",
-      body: o ? `确定删除「${o.style_code || o.style_name} · 床次${o.bed_no}」吗？这张单的 ${num(o.total_bundles)} 张菲票和进度都会一起看不到。` : "确定删除吗？",
-      onOk: () => { run(() => api("DELETE", "/cut-orders/" + id), "已删除"); return true; }
-    });
+    confirmDelCutOrder(o, () => run(() => api("DELETE", "/cut-orders/" + id), "已删除"));
   },
   coCopy(id) {
     const o = (state.co.list || []).find(x => x.id === id);
@@ -2936,6 +3770,7 @@ const A = {
 
   optOpen(type) { A.syncStyleForm(); const u = state.optUI[type]; u.open = !u.open; u.kw = ""; render(); },
   optSearch(type, kw) {
+    if (A._ime) return;
     A.syncStyleForm();
     state.optUI[type].kw = kw; render();
     const el = document.querySelector(".optbox.open .opt-search");
@@ -2962,7 +3797,7 @@ const A = {
     try {
       await api("POST", "/style-options", { type, value });
       const o = await api("GET", "/style-options");
-      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      setStyleOptions(o);
       if (type === "customer") styleForm.customer = value;
       else (type === "size" ? styleForm.size : styleForm.color)[value] = true;
       state.optUI[type].kw = "";
@@ -2975,7 +3810,7 @@ const A = {
     try {
       await api("DELETE", "/style-options", { type, value });
       const o = await api("GET", "/style-options");
-      state.styleOptions = { sizes: o.sizes || [], colors: o.colors || [], customers: o.customers || [] };
+      setStyleOptions(o);
       // 删掉的选项如果正被这张款式选中，一并清掉，免得留下一个选不到的"幽灵"选中态
       if (type === "size") delete styleForm.size[value];
       else if (type === "color") delete styleForm.color[value];
@@ -2992,15 +3827,15 @@ const A = {
     if (mode !== state.pe.mode && peHasMultiPrices()) return toast("请先删除多单价再改变单价模式");
     state.pe.mode = mode; render();
   },
-  peAdd() { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items.push({ name: "", unitPrice: 0, dailyQuota: "", prices: {}, showPrice: true, visibleRoles: [] }); render(); },
-  peDel(i) { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items.splice(i, 1); render(); },
+  peAdd() { syncPeForms(); state.pe.items.push({ name: "", unitPrice: 0, dailyQuota: "", prices: {}, showPrice: true, visibleRoles: [] }); render(); },
+  peDel(i) { syncPeForms(); state.pe.items.splice(i, 1); render(); },
   // 工序名和工价用的也是 onchange，用户没失焦时 state 还是旧值；重绘前先从 DOM 兜一次。
   // 跟 peCollect() 是同一件事，抽出来给那些"会触发重绘"的 handler 复用。
   peSyncNames() {
-    const rows = [...document.querySelectorAll(".pe-tbl tr")].slice(1);
+    const rows = [...document.querySelectorAll(".pe-tbl tr.pe-row")];
     rows.forEach((tr, i) => {
       const it = state.pe.items[i]; if (!it) return;
-      const nameEl = tr.querySelector("td:nth-child(3) input");
+      const nameEl = tr.querySelector(".pe-c-name input");
       if (nameEl) it.name = nameEl.value;
       const priceEl = tr.querySelector(".stepper input");
       if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
@@ -3014,7 +3849,7 @@ const A = {
   async saveDailyWage(v) {
     const val = Number(v);
     if (!(val > 0)) { toast("日工资基数要大于 0"); render(); return; }
-    A.syncStyleForm(); A.syncTplName(); A.peSyncNames();
+    syncPeForms();
     try {
       await api("POST", "/settings/daily-wage", { value: val });
       state.dailyWage = val; render(); toast("已保存，之后按日定额算工价用这个数");
@@ -3030,10 +3865,19 @@ const A = {
   },
   peSetName(i, v) { state.pe.items[i].name = v; },
   peSetPrice(i, v) { A.syncStyleForm(); A.syncTplName(); state.pe.items[i].unitPrice = Number(v) || 0; render(); },
+  // 工价步进按量级自适应：< 1 元一次 0.01、< 10 元一次 0.1、再大一次 1；
+  // 往下减按"减完之后"的量级取步长，1.00 往下是 0.99 而不是 0.90。
   peStep(i, d) {
-    A.syncStyleForm(); A.syncTplName(); A.peSyncNames();
+    syncPeForms();
     const it = state.pe.items[i];
-    it.unitPrice = Math.max(0, Math.round(((Number(it.unitPrice) || 0) + d * 0.1) * 10000) / 10000);
+    const cur = Number(it.unitPrice) || 0;
+    const ref = d < 0 ? cur - 1e-9 : cur;
+    const step = ref < 1 ? 0.01 : ref < 10 ? 0.1 : 1;
+    // 按步长网格走：加就到下一个严格更大的格点，减就到上一个严格更小的格点，
+    // 所以 0.113 点"+"得 0.12（不是 0.123），点"−"得 0.11
+    const k = cur / step;
+    const nextK = d > 0 ? Math.floor(k + 1e-9) + 1 : Math.ceil(k - 1e-9) - 1;
+    it.unitPrice = Math.max(0, Math.round(nextK * step * 10000) / 10000);
     render();
   },
   peSetSizePrice(i, encSize, v) {
@@ -3042,7 +3886,7 @@ const A = {
     if (v === "") delete it.prices[k]; else it.prices[k] = Number(v) || 0;
   },
   peSetRolePrice(i, encRole, v) { A.peSetSizePrice(i, encRole, v); },
-  peToggleShow(i) { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
+  peToggleShow(i) { syncPeForms(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
   pePickRoles(i) {
     const it = state.pe.items[i];
     const chosen = new Set(it.visibleRoles || []);
@@ -3077,7 +3921,7 @@ const A = {
         <button class="act-btn danger ghost" onclick="event.stopPropagation();A.peDelTemplate('${t.id}')">删除</button>
       </div>`).join("") : `<div class="empty">还没有保存过模板</div>`;
     state.pe.templates = list;
-    modal({ title: "选择模板", html: `<div class="card" style="margin-top:0">${html}</div>`, okText: "关闭", onOk: () => true });
+    modal({ title: "选择模板", html: `<div class="card" style="margin-top:0">${html}</div>`, cancelOnly: true, cancelText: "关闭" });
   },
   peApplyTemplate(id) {
     const t = (state.pe.templates || []).find((x) => x.id === id);
@@ -3095,13 +3939,10 @@ const A = {
   },
   // 从 DOM 兜一次最新值：工序名/工价用的是 onchange，用户没失焦时 state 里还是旧值
   peCollect() {
-    const rows = [...document.querySelectorAll(".pe-tbl tr")].slice(1);
+    A.peSyncNames();
+    const rows = [...document.querySelectorAll(".pe-tbl tr.pe-row")];
     rows.forEach((tr, i) => {
       const it = state.pe.items[i]; if (!it) return;
-      const nameEl = tr.querySelector("td:nth-child(3) input");
-      if (nameEl) it.name = nameEl.value;
-      const priceEl = tr.querySelector(".stepper input");
-      if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
       const quotaEl = tr.querySelector(".pe-quota");
       if (quotaEl) it.dailyQuota = quotaEl.value === "" ? "" : (Number(quotaEl.value) || 0);
     });
@@ -3120,27 +3961,45 @@ const A = {
     await run(() => api("PUT", `/styles/${state.pe.styleId}/processes`, { items }), "工序已保存");
     go("styles");
   },
-  async saveStyle() {
-    A.syncStyleForm();
-    const f = styleForm;
-    f.err = {};
-    if (!f.name) f.err.name = "请填写款式名称";
-    if (!f.code) f.err.code = "请填写款号";
-    if (f.err.name || f.err.code) { render(); return; }
-    const images = photoDraft.style || [];
-    const body = {
-      name: f.name, code: f.code, image: images[0] || "", images,
-      size: Object.keys(f.size).join(","), color: Object.keys(f.color).join(","), customer: f.customer
-    };
-    try {
-      toast("保存中…", true);
-      const r = await api(f.id ? "PATCH" : "POST", f.id ? "/styles/" + f.id : "/styles", body);
-      const styleId = f.id || (r.style && r.style.id);
-      state.pe.styleId = styleId;
-      await api("PUT", `/styles/${styleId}/processes`, { items: A.peCollect() });
-      styleForm = null; state.pe = null; photoDraft = {};
-      await loadView("styles"); render(); toast("已保存");
-    } catch (e) { toast((e && e.error) || "保存失败"); }
+  saveStyle() {
+    return guard("saveStyle", async () => {
+      A.syncStyleForm();
+      const f = styleForm;
+      if (!f) return;
+      f.err = {};
+      if (!f.name) f.err.name = "请填写款式名称";
+      if (!f.code) f.err.code = "请填写款号";
+      if (f.err.name || f.err.code) {
+        render();
+        // 滚到第一个出错的输入框并聚焦，别让人在长表单里自己找
+        const bad = document.querySelector(".in.bad"); if (bad) { bad.scrollIntoView({ block: "center" }); bad.focus(); }
+        return;
+      }
+      const draft = photoDraft.style || [];
+      if (draft.some(p => p.status === "processing")) return toast("图片还在处理，请稍等几秒再提交");
+      if (draft.some(p => p.status === "error")) return toast("有图片处理失败了，点它重试或者删掉再提交");
+      const images = draft.map(p => p.data);
+      const body = {
+        name: f.name, code: f.code,
+        size: Object.keys(f.size).join(","), color: Object.keys(f.color).join(","), customer: f.customer
+      };
+      // 图片没动过就不带图片字段，避免改个款名也要把几 MB 的图原样再传一遍
+      const same = f.origImages && f.origImages.length === images.length && f.origImages.every((u, k) => u === images[k]);
+      if (!f.imagesLocked && !(f.id && same)) {
+        body.images = images; body.image = images[0] || "";
+        if (images[0]) { try { body.thumb = await makeThumb(images[0]); } catch (e) { } }
+      }
+      try {
+        toast("保存中…", true);
+        const r = await api(f.id ? "PATCH" : "POST", f.id ? "/styles/" + f.id : "/styles", body);
+        const styleId = f.id || (r.style && r.style.id);
+        state.pe.styleId = styleId;
+        await api("PUT", `/styles/${styleId}/processes`, { items: A.peCollect() });
+        if (body.images) cacheFullImgs(styleId, images.filter(showable));
+        styleForm = null; state.pe = null; photoDraft = {}; formSnap.base = null;
+        await loadView("styles"); render(); toast("已保存");
+      } catch (e) { toast((e && e.error) || "保存失败"); }
+    });
   },
   delStyle(id) {
     modal({
@@ -3168,14 +4027,8 @@ const A = {
   setSlogWho(id) { state.slog.who = state.slog.who === id ? "" : id; render(); },
 
   /* ---- 管理：员工 ---- */
-  setEmpKw(v) {
-    state.empKw = v; state.empPage = 1;   // 换关键词就回到第 1 页
-    clearTimeout(A._empT);
-    A._empT = setTimeout(() => {
-      render();
-      const el = $("emp-kw"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
-    }, 300);
-  },
+  // 换关键词就回到第 1 页
+  setEmpKw: debouncedSearch("_empT", "emp-kw", 300, (v) => { state.empKw = v; state.empPage = 1; }),
   setEmpPage(n) { state.empPage = Math.max(1, n); render(); window.scrollTo(0, 0); },
   changeRole(id, role) { run(() => api("PATCH", "/users/" + id, { role }), "已设置岗位"); },
   editUser(id) {
@@ -3240,48 +4093,124 @@ const A = {
   }
 };
 
-/* ================= 下拉刷新 ================= */
-// 在页面顶部往下拉可以强制刷新一次当前页数据，不用退出重进
+/* ================= 下拉刷新 =================
+ * 顶部下拉强制刷新当前页，指示器跟手（阻尼）、拉够变色提示、刷新时转圈；横向滑动不误触发。 */
 (function setupPullRefresh() {
-  const THRESHOLD = 62;
-  let startY = null, dragging = false, dist = 0, refreshing = false;
-  const canPull = () => !refreshing && me() && !modalState && !lightbox && window.scrollY === 0;
+  const THRESHOLD = 64;
+  let startX = 0, startY = null, decided = false, pulling = false, dist = 0, refreshing = false, ind = null;
+  const canPull = () => !refreshing && me() && !overlayOpen() && !notifPanelOpen && window.scrollY <= 0 && !state.scan.camOn;
+  const node = () => {
+    if (!ind) {
+      ind = document.createElement("div"); ind.className = "ptr"; ind.setAttribute("aria-hidden", "true");
+      ind.innerHTML = `<span class="ptr-ic">${icon("refresh")}</span>`;
+      document.body.appendChild(ind);
+    }
+    return ind;
+  };
+  const show = (d, spin) => {
+    const el = node(), k = Math.min(1, d / THRESHOLD);
+    el.classList.remove("back");
+    el.style.transform = `translate3d(-50%,${d - 48}px,0)`;
+    el.style.opacity = String(k);
+    el.classList.toggle("ready", d >= THRESHOLD);
+    el.classList.toggle("spin", !!spin);
+    el.querySelector(".ptr-ic").style.transform = spin ? "" : `rotate(${k * 300}deg)`;
+  };
+  const hide = () => {
+    if (!ind) return;
+    ind.classList.add("back"); ind.classList.remove("spin", "ready");
+    ind.style.transform = "translate3d(-50%,-48px,0)"; ind.style.opacity = "0";
+  };
   document.addEventListener("touchstart", (e) => {
-    if (!canPull()) { startY = null; return; }
-    startY = e.touches[0].clientY;
+    startY = null;
+    if (!canPull() || e.touches.length > 1) return;
+    if (e.target.closest && e.target.closest(".tbl-wrap,.chiprow,.scan-viewport,.opt-list,.lightbox,.mask")) return;
+    startY = e.touches[0].clientY; startX = e.touches[0].clientX; decided = false; pulling = false; dist = 0;
   }, { passive: true });
   document.addEventListener("touchmove", (e) => {
-    if (startY == null) return;
-    const dy = e.touches[0].clientY - startY;
-    if (dy <= 0 || window.scrollY > 0) return;
-    dragging = true; dist = dy;
+    if (startY === null) return;
+    const dy = e.touches[0].clientY - startY, dx = e.touches[0].clientX - startX;
+    if (!decided) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      decided = true;
+      if (Math.abs(dx) > Math.abs(dy) || dy < 0 || window.scrollY > 0) { startY = null; return; }
+    }
+    pulling = true;
+    dist = dy > 0 ? rubber(dy, 600) : 0;
+    show(dist, false);
   }, { passive: true });
-  document.addEventListener("touchend", async () => {
-    if (!dragging) { startY = null; return; }
-    dragging = false; startY = null;
-    if (dist < THRESHOLD) return;
-    refreshing = true;
-    try { await loadView(route.v); render(); toast("已刷新"); } catch (e) { }
-    refreshing = false;
-  });
+  const end = async () => {
+    if (startY === null || !pulling) { startY = null; return; }
+    startY = null; pulling = false;
+    if (dist < THRESHOLD) { hide(); return; }
+    refreshing = true; show(THRESHOLD * 0.8, true); buzz(8);
+    try { await loadView(route.v); render(); }
+    catch (e) { toast((e && e.error) || "刷新失败"); }
+    refreshing = false; hide();
+  };
+  document.addEventListener("touchend", end);
+  document.addEventListener("touchcancel", end);
 })();
+
+/* ================= 款式图：拖进来 / 粘贴 =================
+ * 电脑上建款式，从文件夹直接拖图进图片区、或者截图后 Ctrl+V 就能加，不用每次点"添加图片"再翻文件夹。 */
+const hasFiles = e => !!(e.dataTransfer && [...(e.dataTransfer.types || [])].indexOf("Files") >= 0);
+document.addEventListener("dragover", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();                                     // 不拦的话浏览器会直接打开这张图、页面就没了
+  const g = e.target.closest && e.target.closest(".photos-grid.editable");
+  document.querySelectorAll(".photos-grid.drop").forEach(x => { if (x !== g) x.classList.remove("drop"); });
+  if (g) { g.classList.add("drop"); e.dataTransfer.dropEffect = "copy"; } else e.dataTransfer.dropEffect = "none";
+});
+document.addEventListener("dragleave", (e) => {
+  const g = e.target.closest && e.target.closest(".photos-grid.editable");
+  if (g && !g.contains(e.relatedTarget)) g.classList.remove("drop");
+});
+document.addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  const g = e.target.closest && e.target.closest(".photos-grid.editable");
+  document.querySelectorAll(".photos-grid.drop").forEach(x => x.classList.remove("drop"));
+  if (g) A.addPhotoFiles(g.getAttribute("data-ctx"), [...(e.dataTransfer.files || [])]);
+});
+document.addEventListener("paste", (e) => {
+  const g = document.querySelector(".photos-grid.editable");
+  if (!g || !e.clipboardData) return;
+  const files = [...(e.clipboardData.files || [])].filter(f => /^image\//.test(f.type));
+  if (!files.length) return;
+  e.preventDefault();
+  A.addPhotoFiles(g.getAttribute("data-ctx"), files);
+});
 
 /* ================= 启动 ================= */
 window.go = go; window.A = A;
 window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredInstall = e; });
 window.addEventListener("appinstalled", () => { deferredInstall = null; toast("已添加到手机主屏"); });
+// 前端发了新版本：Service Worker 一接管就提示刷新（不自动刷，免得把正在填的表单冲掉）
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return;
+    toast("有新版本可用", true, { label: "刷新", fn: () => { reloading = true; location.reload(); } });
+  });
+}
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";   // 滚动位置自己按页面数据加载完再恢复
 
+let bootTarget = null;   // 没登录时从深链接 / 推送进来的目标页，登录后直接去
 (async function boot() {
-  // 每次打开只要本来是登录状态，都先过一遍欢迎界面（logo/公司名称/计件跟踪）。
-  // index.html 里已经有一份静态的欢迎界面兜底，JS 跑起来之前手机屏幕就不会是空的。
-  // 本地有 token 就直接用它拉数据进工作台（token 不过期，只有 401 或主动退出才会清掉）
+  const target = parseLocation();
+  if (history.replaceState) history.replaceState({ v: target.v, id: target.id, depth: 0 }, "", routeUrl(target.v, target.id));
+  // index.html 已有静态欢迎界面兜底，JS 跑起来前屏幕不会是空的；
+  // 本地有 token 就直接拉数据（token 不过期）；URL 带页面（刷新/推送进来）就落到那一页，不一律回首页
   if (state.token) {
-    showWelcome = true; render();
-    const p = api("GET", "/me").then(r => { state.me = r.user; return loadView("home").catch(() => { }); })
+    showWelcome = true; route = target; render();
+    const p = api("GET", "/me").then(r => { state.me = r.user; return loadView(target.v).catch(e => { toast((e && e.error) || "加载失败"); }); })
       .catch(() => { state.token = null; state.me = null; localStorage.removeItem(TOKEN_KEY); });
     await Promise.all([p, new Promise(r => setTimeout(r, 1200))]);
     if (state.token) startNotifPoll();
-  }
+    else { bootTarget = target.v === "home" ? null : target; route = { v: "home", id: null }; }
+  } else if (target.v !== "home") bootTarget = target;
   showWelcome = false;
   render();
 })();

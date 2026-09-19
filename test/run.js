@@ -1,9 +1,5 @@
 "use strict";
-/**
- * 测试入口：npm test
- * 用一个临时数据目录 + 随机端口启动服务端，跑各组测试，最后自动关闭。
- * 不会影响正式共用的 daka-system/data 目录。
- */
+// 测试入口（npm test）：临时数据目录 + 随机端口起服务端，跑完各组测试后自动清理
 const { spawn, spawnSync } = require("child_process");
 const mysqlDropArgs = (db, e) => [
   ...(e.MYSQL_SOCKET ? ["-S", e.MYSQL_SOCKET] : ["-h", e.MYSQL_HOST, "-P", e.MYSQL_PORT]),
@@ -18,13 +14,9 @@ const path = require("path");
 const PORT = 3910 + Math.floor(Math.random() * 90);
 const BASE_URL = `http://localhost:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "jijian-test-"));
-// 迁到 MySQL 后测试指向一个本地实例（默认 127.0.0.1:3307，可用 TEST_MYSQL_* 覆盖），
-// 每次跑用一个唯一库名，db.js init 会自动建库建表，互不干扰。
+// 每次用一个唯一库名（db.js init 自动建库建表），连接可用 TEST_MYSQL_* 覆盖
 const TEST_DB = `jijian_test_${PORT}_${Math.floor(Math.random() * 1e6)}`;
-// 本机开发机上 MySQL/MariaDB 的 root 账号设了真实密码，测试代码不该也不能知道这个密码；
-// 但当前系统用户在本机走 unix socket 是免密的（unix_socket 认证插件），所以探测到本机 socket
-// 存在时，默认改用 socket + 当前系统用户名，免密直接可跑。TEST_MYSQL_SOCKET/TEST_MYSQL_USER
-// 等环境变量仍可覆盖默认值；探测不到 socket（比如 CI、其他机器）就保持原来的 TCP 默认，不受影响。
+// 本机有 MySQL socket 就用 socket + 当前系统用户（免密），否则走 TCP 默认
 const DEFAULT_SOCKET = "/tmp/mysql.sock";
 const hasLocalSocket = fs.existsSync(DEFAULT_SOCKET);
 const socket = process.env.TEST_MYSQL_SOCKET || (hasLocalSocket ? DEFAULT_SOCKET : "");

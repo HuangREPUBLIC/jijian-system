@@ -1,9 +1,6 @@
 "use strict";
-/**
- * 账号跟「跟单系统」共用同一张 users 表（同一批人），这里只是给这个
- * 独立部署的服务自己签发/校验 JWT，密钥跟 daka-system 分开存
- * （.jwt_secret_jijian，不会跟 daka-system 自己的 .jwt_secret 冲突）。
- */
+// 账号跟「跟单系统」共用同一张 users 表；这里独立签发/校验 JWT，
+// 密钥文件跟 daka-system 分开存（.jwt_secret_jijian）。
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const fs = require("fs");
@@ -49,40 +46,28 @@ async function authRequired(req, res, next) {
   }
 }
 
-function adminRequired(req, res, next) {
-  if (!req.user || req.user.role !== "admin") return res.status(403).json({ error: "仅管理员可操作" });
-  next();
-}
 const isAdmin = (u) => !!u && u.role === "admin";
 
-// ===== 测试阶段权限放宽（临时）=====
-// 规则：管理员 + 两个主管(技术主管/业务主管)= 完全权限（含员工管理/操作记录/薪资管理）；
-// 其他所有登录用户 = 跟管理员一样，唯独看不到那 3 块。
-// 主管角色键：daka 导入的是 r1785125327446(技术主管)/r1785125333976(业务主管)，
-// 同时兼容 jijian 原生的 tech_lead/biz_lead。测试结束想收紧：把 TEST_OPEN_ALL 改成 false，
-// 并把 routes.js 里用 managerRequired/authRequired 放开的路由按需改回 adminRequired 即可。
-// 有完全权限的岗位（除 admin 外）。branch_lead=分厂主管 是这个系统自己的岗位；
-// 后面几个是从跟单系统导入员工时带过来的老岗位键，留着是为了不把已有的人踢出权限，
-// 等他们改成新岗位后可以清掉。
+// 有完全权限的岗位（除 admin 外）：branch_lead 是本系统的分厂主管，
+// 其余是从跟单系统导入员工时带过来的老岗位键
 const SUPERVISOR_ROLES = new Set([
   "branch_lead",
   "r1785125327446", "r1785125333976", "tech_lead", "biz_lead"
 ]);
 const isManager = (u) => isAdmin(u) || (!!u && SUPERVISOR_ROLES.has(u.role));
 
-// 完全权限门槛：员工管理/操作记录/薪资管理这 3 块用它（管理员+主管）。
+// 完全权限门槛：员工管理/操作记录/薪资管理这 3 块用它
 function managerRequired(req, res, next) {
   if (!req.user || !isManager(req.user)) return res.status(403).json({ error: "仅管理员或主管可操作" });
   next();
 }
 
-// 测试阶段“人人如管理员”：其余功能（工序/款式/考勤/生产/效率/扫菲/代打点/看他人数据）对所有
-// 登录用户开放。收紧时把 TEST_OPEN_ALL 改 false，行为回到"仅管理员"。
+// 测试阶段人人如管理员：其余功能对所有登录用户开放，收紧时把 TEST_OPEN_ALL 改 false
 const TEST_OPEN_ALL = true;
 const canActAsAdmin = (u) => TEST_OPEN_ALL || isAdmin(u);
 
 module.exports = {
   hashPassword, verifyPassword, signToken, userPublic, userById,
-  authRequired, adminRequired, isAdmin,
+  authRequired, isAdmin,
   isManager, managerRequired, canActAsAdmin
 };

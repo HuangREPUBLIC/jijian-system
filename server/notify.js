@@ -1,25 +1,11 @@
 "use strict";
-/**
- * 通知投递的统一入口：写站内信 + 发系统推送。
- *
- * 单独一个文件是为了断开循环依赖：routes.js 要 require("./routes_cutting") 挂子路由，
- * 而 routes_cutting.js 里的裁床单增删改也要发通知——如果这两个函数留在 routes.js 里，
- * 子路由就得反向 require 主路由，成环。
- *
- * 写通知失败一律咽掉：单子已经保存成功了，不该因为通知写不进去而让整个请求 500。
- */
+// 通知投递的统一入口：写站内信 + 发系统推送。单独一个文件避免 routes.js/routes_cutting.js 循环依赖。
+// 写通知失败一律咽掉：不该因为通知写不进去而让整个请求 500。
 const { db, uid } = require("./db");
 const A = require("./auth");
 const P = require("./push");
 
-/**
- * @param userIds 收件人
- * @param text    站内信正文（老式调用点只有这一句）
- * @param link    点开跳哪
- * @param excludeUserId 不通知操作者自己
- * @param meta    { actorName, targetLabel, what, tag } —— 前端用它拼"谁 在哪个对象 做了什么"
- *                的卡片式展示；tag 相同的系统推送会互相覆盖而不是堆一屏
- */
+// meta = { actorName, targetLabel, what, tag }：前端拼"谁 + 对象 + 做了什么"；tag 相同的推送互相覆盖
 async function notifyUsers(userIds, text, link, excludeUserId, meta) {
   const targets = [...new Set((userIds || []).filter((id) => id && id !== excludeUserId))];
   if (!targets.length) return;
@@ -32,8 +18,7 @@ async function notifyUsers(userIds, text, link, excludeUserId, meta) {
     }
   } catch (e) { console.error("[notify] 写通知失败", e); }
 
-  // 同一批人再发一次系统推送，App 没打开也能看到。
-  // 标题放对象名（哪张单/哪个款），一眼知道是关于什么的；正文放"谁做了什么"。
+  // 同一批人再发一次系统推送（App 没打开也能看到）：标题放对象名，正文放"谁做了什么"
   P.sendToUsers(targets, {
     title: (meta && meta.targetLabel) || "计件跟踪",
     body: (meta && meta.actorName ? meta.actorName + " " : "") + ((meta && meta.what) || text),

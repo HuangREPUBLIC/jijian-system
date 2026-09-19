@@ -1,15 +1,6 @@
 "use strict";
-/**
- * 编菲算法（纯函数，无 IO）：颜色×尺码矩阵 + 一组开关 → 一串扎。
- *
- * 扎号编号顺序是这里最关键的约定，用参考系统的实拍数据反推出来的：
- *   外层尺码 → 中层"该尺码下的第几扎" → 内层颜色轮转
- * 即同一个尺码里，各颜色的第 1 扎先按颜色顺序排完，再排各颜色的第 2 扎。
- * 实拍验证：S 码 扎号1=223暗蓝52、2=331浅蓝条26、3=223暗蓝36、4=331浅蓝条28。
- *
- * colors / sizes 数组的顺序就是矩阵行列顺序，也就是编号遍历顺序；
- * 调用方（裁床编菲页、种子脚本）负责按现场习惯排好再传进来。
- */
+// 编菲算法（纯函数）：颜色×尺码矩阵 + 开关 → 一串扎。
+// 扎号顺序：尺码外层 → 该尺码第几扎 → 颜色内层轮转（colors/sizes 数组顺序即矩阵顺序）
 
 const cellKey = (color, size) => `${color}|${size}`;
 
@@ -26,12 +17,9 @@ function splitQty(total, bundles) {
  * @param {object} input
  * @param {string[]} input.colors   矩阵行顺序
  * @param {string[]} input.sizes    矩阵列顺序 = 编号外层顺序
- * @param {object}   input.cells    { [cellKey(color,size)]: { input:number, bundles:number } }
- *   格子还支持一个可选的 `qtys: number[]` 字段——显式给出该格逐扎的件数。
- *   现场同一个(颜色,尺码)可以分几次铺布，每次层数不同，件数自然不同（比如实拍
- *   S 码 223暗蓝 是 4 扎 52/36/52/36 件），`{input,bundles}` 这种"一格一个值"的
- *   均匀模型表达不了这种情况，所以加一条显式路径：给了 `qtys` 就按数组原样取，
- *   扎数=数组长度、忽略 input/bundles/multiple；没给 `qtys` 时行为跟以前完全一样。
+ * @param {object}   input.cells    { [cellKey(color,size)]: { input:number, bundles:number } }；
+ *   也支持 `qtys: number[]` 显式给出该格逐扎件数（同一格分次铺布、层数不同时用），
+ *   给了 qtys 就按数组原样取，忽略 input/bundles/multiple
  * @param {number}   [input.startNo=1]     从第几扎起（自动编号时）
  * @param {boolean}  [input.multiple=true] 倍数模式：input 是每扎件数；关闭时 input 是该格总件数（对 qtys 无效）
  * @param {object}   [input.customNos]     { [cellKey]: number[] } 自定义扎号，按该格扎序

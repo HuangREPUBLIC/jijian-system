@@ -1,16 +1,8 @@
 "use strict";
-/**
- * 本地演示数据：造一套跟参考截图对得上的数据，用来人工验收界面。
- * 只在本地库跑（默认 jijian_dev），生产不要执行。可反复跑：每次先删掉自己造的款式与单。
- *
- * 颜色/尺码数组的顺序 = 矩阵行列顺序 = 扎号编号的遍历顺序。截图里 扎号1 是 S 码的
- * 223暗蓝，所以尺码数组从 S 排起、颜色数组从 223暗蓝 排起，不是按选择器里的显示顺序。
- */
+// 本地演示数据（只在 jijian_dev 这类库跑，可重复执行：先删掉自己造的款式与单再重建）。
+// 颜色/尺码数组的顺序就是扎号编号顺序，按参考截图从 S 码、223暗蓝 排起。
 
-// 生产库防呆：wipe() 是真的 DELETE FROM jj_cut_orders/jj_styles/... （按款号删），注释里写了
-// "生产不要执行"但代码本身没拦过——配了生产库连接串的 shell 里直接 node scripts/seed_demo.js
-// （绕过 npm run seed:demo 里写死的 MYSQL_DATABASE=jijian_dev）就会真删生产数据。这里在做任何
-// require/连接之前先挡一道：库名不含 dev/demo/test 就拒绝执行，除非显式 SEED_FORCE=1。
+// 生产库防呆：wipe() 会真删数据，库名不含 dev/demo/test 就拒绝执行（SEED_FORCE=1 可强制）
 const SEED_DB_NAME = process.env.MYSQL_DATABASE || process.env.MYSQL_DB || "jijian";
 if (!/dev|demo|test/i.test(SEED_DB_NAME) && process.env.SEED_FORCE !== "1") {
   console.error(
@@ -26,9 +18,7 @@ if (!/dev|demo|test/i.test(SEED_DB_NAME) && process.env.SEED_FORCE !== "1") {
 const path = require("path");
 const { init, db, pool, uid } = require(path.join(__dirname, "..", "server", "db"));
 const { planBundles, cellKey } = require(path.join(__dirname, "..", "server", "cutting"));
-// 取菲票号必须跟正常建单走同一套加锁逻辑：nextTicketRange 用 SELECT...FOR UPDATE 锁行，
-// 防止本地 `npm run dev:local` 起着服务、另开终端跑 `npm run seed:demo` 时两边撞号——
-// "菲票号互不相同"是有测试断言保护的不变量，种子脚本不能自己另起一套裸读裸写的取号逻辑。
+// 取菲票号复用服务端的加锁逻辑，跟运行中的服务并发建单也不会撞号
 const { nextTicketRange } = require(path.join(__dirname, "..", "server", "routes_cutting"));
 
 const COMPANY = "惠民县惠锦服装制衣有限公司";
@@ -74,9 +64,7 @@ async function makeProcesses(styleId, items) {
   }
 }
 
-// 直接写库造裁床单（不走 HTTP），但复用同一个 planBundles，保证跟界面上生成的结果一致。
-// 取号 + 建单头 + 建扎 + 建工序快照 全部放同一个事务里，跟 routes_cutting.js 的
-// POST /cut-orders 一样：取号必须在事务内、用同一把行锁，否则跟运行中的服务并发建单会撞号。
+// 直接写库造裁床单，复用 planBundles；取号、单头、扎、工序快照在同一个事务里
 async function makeOrder(styleId, opts) {
   const plan = planBundles({
     colors: opts.colors, sizes: opts.sizes, cells: opts.cells,
@@ -139,10 +127,7 @@ async function makeOrder(styleId, opts) {
     XL:  { "223暗蓝": [104, 72], "331浅蓝条": [52, 56] },
     "2XL": { "223暗蓝": [104, 72], "331浅蓝条": [52, 56] }
   };
-  // 用 qtys 显式给出逐扎件数（现场同一色同一码可以分几次铺布，每次层数不同，件数自然不同，
-  // 均匀模式表达不了这种情况）：每个格子铺 4 扎，两个实拍数字各出现两次——S 码就是截图里的
-  // 52/36/52/36 与 26/28/26/28；其余尺码按同样的"两个数各来两次"的形状铺开，各格总件数
-  // = 2*(arr[0]+arr[1])，跟改之前均分写法的总数完全一致，所以整单总件数仍然精确等于 2272。
+  // qtys 逐扎给件数（同色同码分几次铺布、每次层数不同）：每格 4 扎，两个实拍数字各出现两次，整单 2272 件
   const cells2 = {};
   for (const size of SIZES) {
     for (const color of colors1) {

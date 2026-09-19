@@ -114,10 +114,7 @@ ok(visibleTo({ visible_roles: "[]" }, "worker") === true, "空数组 = 所有岗
 ok(visibleTo({ visible_roles: '["tech_lead"]' }, "worker") === false, "限制岗位后其他岗位不可见");
 ok(visibleTo({ visible_roles: '["tech_lead"]' }, "tech_lead") === true, "限制岗位内的岗位可见");
 
-// —— 自定义扎号与自动扎号混用：产生碰撞（已知行为，由调用方拦截）——
-// 这个测试记录 planBundles 的真实行为：当自定义扎号与自动编号共存时，
-// nextNo 计数器不知道 customNos 占用了哪些号，可能产生重复扎号。
-// 算法设计上允许这个碰撞存在，由上层调用方用 duplicateBundleNos 检测并拦截。
+// —— 自定义扎号与自动编号混用会撞号：planBundles 不管，由调用方用 duplicateBundleNos 拦截 ——
 {
   const k1 = cellKey("A", "S");
   const k2 = cellKey("B", "S");
@@ -138,7 +135,6 @@ ok(visibleTo({ visible_roles: '["tech_lead"]' }, "tech_lead") === true, "限制�
 }
 
 // —— duplicateBundleNos 能检测出重号 ——
-// 把上面混用产生的碰撞结果传给 duplicateBundleNos，应该能准确返回重复的扎号列表
 {
   const k1 = cellKey("A", "S");
   const k2 = cellKey("B", "S");
@@ -157,7 +153,6 @@ ok(visibleTo({ visible_roles: '["tech_lead"]' }, "tech_lead") === true, "限制�
 }
 
 // —— duplicateBundleNos 对正常情况不误报 ——
-// 传入没有重号的 bundles，应该返回空数组
 {
   const r = planBundles({
     colors: ["A", "B"], sizes: ["S"],

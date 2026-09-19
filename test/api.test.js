@@ -197,6 +197,50 @@ async function call(method, path, token, body) {
   const targetList = (await call("GET", "/notifications", targetT)).j.list;
   ok(targetList.some(n => n.text.includes("岗位")), "被调整岗位的员工本人收到了通知");
 
+  // ---- 通知删除 / 清空已读 ----
+  const seeded = [];
+  for (let i = 0; i < 4; i++) {
+    const nid = uid(); seeded.push(nid);
+    await db.prepare("INSERT INTO jj_notifications(id,user_id,text,link,created_at,read_at) VALUES(?,?,?,?,?,?)")
+      .run(nid, adminId, "删除测试" + i, null, Date.now(), i < 2 ? Date.now() : null);
+  }
+  const unreadBeforeDel = (await call("GET", "/notifications/unread-count", aT)).j.total;
+  ok((await call("DELETE", `/notifications/${seeded[3]}`, wT)).status === 403, "别人删不了不属于自己的通知");
+  ok((await call("DELETE", `/notifications/${seeded[3]}`, aT)).status === 200, "删除自己的一条通知");
+  ok((await call("DELETE", `/notifications/${seeded[3]}`, aT)).status === 404, "已删的通知再删返回 404");
+  ok(!(await call("GET", "/notifications", aT)).j.list.some(n => n.id === seeded[3]), "删掉的通知不再出现在列表里");
+  ok((await call("GET", "/notifications/unread-count", aT)).j.total === unreadBeforeDel - 1, "删掉一条未读的，未读数跟着减一");
+  ok((await call("DELETE", "/notifications", aT)).status === 400, "清空通知必须带 read=1");
+  const clearRead = await call("DELETE", "/notifications?read=1", aT);
+  const afterClear = (await call("GET", "/notifications", aT)).j.list;
+  ok(clearRead.status === 200 && afterClear.every(n => !n.read) && afterClear.some(n => n.id === seeded[2]), "清空已读只删已读的，未读的留着");
+
+  // ---- 款式列表只带缩略图，原图按需取 ----
+  const bigImg = "data:image/jpeg;base64," + "A".repeat(60000);
+  const thumbImg = "data:image/jpeg;base64," + "B".repeat(3000);
+  const withImg = await call("POST", "/styles", aT, { name: "缩略图款", code: "THUMB-1", images: [bigImg, bigImg], thumb: thumbImg });
+  const sid = withImg.j.style.id;
+  let listed = (await call("GET", "/styles", aT)).j.styles.find(s => s.id === sid);
+  ok(listed.image === thumbImg && listed.has_thumb === true && listed.image_count === 2 && listed.images === undefined,
+    "款式列表只带缩略图和图片张数，不带原图");
+  const full = await call("GET", `/styles/${sid}`, aT);
+  ok(full.status === 200 && JSON.parse(full.j.style.images).length === 2 && full.j.style.image === bigImg, "单个款式接口带全部原图");
+  ok((await call("GET", "/styles/nope", aT)).status === 404, "不存在的款式 404");
+  await call("PATCH", `/styles/${sid}`, aT, { images: [bigImg] });
+  listed = (await call("GET", "/styles", aT)).j.styles.find(s => s.id === sid);
+  ok(listed.has_thumb === false && listed.image === bigImg && listed.image_count === 1, "换了图没带缩略图：旧缩略图作废，退回原图");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "not-an-image" })).status === 400, "补缩略图只收图片 data URI");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "data:image/jpeg;base64," + "C".repeat(300 * 1024) })).status === 400,
+    "缩略图太大不收（防止把原图塞进缩略图列）");
+  const notifBeforeThumb = (await call("GET", "/notifications/unread-count", supT)).j.total;
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg })).status === 200, "后台补缩略图");
+  listed = (await call("GET", "/styles", aT)).j.styles.find(s => s.id === sid);
+  ok(listed.has_thumb === true && listed.image === thumbImg, "补完缩略图列表就用缩略图");
+  ok((await call("GET", "/notifications/unread-count", supT)).j.total === notifBeforeThumb, "补缩略图是静默的，不发通知");
+  const noImg = await call("POST", "/styles", aT, { name: "无图款", code: "NOIMG-1" });
+  ok((await call("PUT", `/styles/${noImg.j.style.id}/thumb`, aT, { thumb: thumbImg })).status === 404, "没有图片的款式不能补缩略图");
+  ok((await call("GET", "/styles", aT)).j.styles.find(s => s.id === noImg.j.style.id).image_count === 0, "没图的款式图片张数为 0");
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error("ERROR", e); process.exit(1); });
