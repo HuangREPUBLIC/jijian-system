@@ -229,16 +229,20 @@ async function call(method, path, token, body) {
   await call("PATCH", `/styles/${sid}`, aT, { images: [bigImg] });
   listed = (await call("GET", "/styles", aT)).j.styles.find(s => s.id === sid);
   ok(listed.has_thumb === false && listed.image === bigImg && listed.image_count === 1, "换了图没带缩略图：旧缩略图作废，退回原图");
-  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "not-an-image" })).status === 400, "补缩略图只收图片 data URI");
-  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "data:image/jpeg;base64," + "C".repeat(300 * 1024) })).status === 400,
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "not-an-image", srcLen: bigImg.length })).status === 400, "补缩略图只收图片 data URI");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg })).status === 400, "补缩略图必须带封面长度");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg, srcLen: bigImg.length + 1 })).status === 409,
+    "封面跟补图时不一致（被换过）就不写缩略图");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: "data:image/jpeg;base64," + "C".repeat(300 * 1024), srcLen: bigImg.length })).status === 400,
     "缩略图太大不收（防止把原图塞进缩略图列）");
   const notifBeforeThumb = (await call("GET", "/notifications/unread-count", supT)).j.total;
-  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg })).status === 200, "后台补缩略图");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg, srcLen: bigImg.length })).status === 200, "后台补缩略图");
+  ok((await call("PUT", `/styles/${sid}/thumb`, aT, { thumb: thumbImg, srcLen: bigImg.length })).status === 409, "已有缩略图的不会被覆盖");
   listed = (await call("GET", "/styles", aT)).j.styles.find(s => s.id === sid);
   ok(listed.has_thumb === true && listed.image === thumbImg, "补完缩略图列表就用缩略图");
   ok((await call("GET", "/notifications/unread-count", supT)).j.total === notifBeforeThumb, "补缩略图是静默的，不发通知");
   const noImg = await call("POST", "/styles", aT, { name: "无图款", code: "NOIMG-1" });
-  ok((await call("PUT", `/styles/${noImg.j.style.id}/thumb`, aT, { thumb: thumbImg })).status === 404, "没有图片的款式不能补缩略图");
+  ok((await call("PUT", `/styles/${noImg.j.style.id}/thumb`, aT, { thumb: thumbImg, srcLen: 10 })).status === 409, "没有图片的款式不能补缩略图");
   ok((await call("GET", "/styles", aT)).j.styles.find(s => s.id === noImg.j.style.id).image_count === 0, "没图的款式图片张数为 0");
 
   console.log(`\n${pass} passed, ${fail} failed`);

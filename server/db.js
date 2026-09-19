@@ -450,16 +450,27 @@ async function init() {
   await addCol("jj_style_processes", "daily_quota", "daily_quota DOUBLE");
   await addCol("jj_cut_order_processes", "daily_quota", "daily_quota DOUBLE");
 
-  // 2i. 进度聚合按 (扎, 工序) 分组，补索引
-  const [scIdx] = await pool.query(
-    "SELECT 1 AS x FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME='jj_scan_records' AND INDEX_NAME='idx_jjscan_bundle'",
-    [CONF.database]);
-  if (!scIdx[0]) {
-    await pool.query("ALTER TABLE jj_scan_records ADD INDEX idx_jjscan_bundle (bundle_id, order_process_id)");
-    console.log("[migrate] jj_scan_records 增加 idx_jjscan_bundle 索引");
-  }
-  // 2l. 款式封面缩略图：列表只要 360px 小图，原图（base64 一张两三百KB）只在编辑/点开大图时取
+  const addIdx = async (table, name, cols) => {
+    const [r] = await pool.query(
+      "SELECT 1 AS x FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND INDEX_NAME=?",
+      [CONF.database, table, name]);
+    if (r[0]) return;
+    await pool.query(`ALTER TABLE ${table} ADD INDEX ${name} (${cols})`);
+    console.log(`[migrate] ${table} 增加 ${name} 索引`);
+  };
+  // 2i. 索引：进度按 (扎, 工序) 聚合；效率/薪资汇总按月份扫全员
+  await addIdx("jj_scan_records", "idx_jjscan_bundle", "bundle_id, order_process_id");
+  await addIdx("jj_scan_records", "idx_jjscan_date_user", "date, user_id");
+  await addIdx("jj_attendance", "idx_jjatt_date_user", "date, user_id");
+
+  // 2l. 款式缩略图 + 图片张数：列表只读这两列，原图（base64 一张几百 KB）只在编辑/看大图时取
   await addCol("jj_styles", "thumb", "thumb MEDIUMTEXT");
+  if (!(await hasCol("jj_styles", "image_count"))) {
+    await addCol("jj_styles", "image_count", "image_count INT NOT NULL DEFAULT 0");
+    await pool.query(`UPDATE jj_styles SET image_count = CASE
+      WHEN images IS NOT NULL AND JSON_VALID(images) THEN (CASE WHEN JSON_LENGTH(images) > 0 THEN JSON_LENGTH(images) ELSE image IS NOT NULL AND image <> '' END)
+      ELSE image IS NOT NULL AND image <> '' END`);
+  }
 
   // 预种菲票号起始值：nextTicketRange 用 FOR UPDATE 锁这行取号，锁不了不存在的行；
   // 用 INSERT IGNORE（不是 ON DUPLICATE KEY UPDATE）避免重启时把计数器冲回 36000

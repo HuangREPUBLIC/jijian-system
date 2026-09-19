@@ -93,7 +93,7 @@ function fmtNotifTime(ms) {
 function notifItemHtml(n, opt) {
   const o = opt || {};
   const rich = !!(n.actorName && n.targetLabel && n.what);
-  return `<div class="notif-item${o.desk ? " desk" : ""}${n.read ? "" : " unread"}" onclick="A.openNotif('${n.id}','${esc(n.link || "")}')">
+  return `<div class="notif-item${o.desk ? " desk" : ""}${n.read ? "" : " unread"}" onclick="A.openNotif('${n.id}','${jsArg(n.link || "")}')">
     ${rich ? `<span class="avatar sm">${esc(shortName(n.actorName))}</span>` : `<span class="avatar sm sys">${icon("bell")}</span>`}
     <div class="notif-main">${rich ? `
       <div class="notif-top"><span class="notif-actor">${esc(n.actorName)}</span><span class="tag">${esc(n.targetLabel)}</span></div>
@@ -106,6 +106,9 @@ function notifItemHtml(n, opt) {
   </div>`;
 }
 const num = n => Math.round(Number(n || 0) * 100) / 100;
+// 塞进 onclick="A.x('…')" 的参数：encodeURIComponent 不转 ' ( ) 等字符，值里带单引号就能跳出字符串执行代码，
+// 所以补转一遍；处理函数里 decodeURIComponent 还原
+const jsArg = v => encodeURIComponent(String(v == null ? "" : v)).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 const pctText = p => (p === null || p === undefined) ? "" : Math.round(p * 1000) / 10 + "%";
 // 金额：千分位 + 固定两位小数（¥12,345.60）。工资单上 1234.5 和 12345 并排时，没有千分位一眼看不出差了十倍
 function money(n) {
@@ -204,17 +207,8 @@ function emptyHtml(text, ic, actionHtml) {
   return `<div class="empty">${ic ? `<span class="empty-ic">${icon(ic)}</span>` : ""}<div>${esc(text)}</div>${actionHtml || ""}</div>`;
 }
 const me = () => state.me;
-// 跟 server/auth.js 的 SUPERVISOR_ROLES 保持一致：branch_lead 是本系统的分厂主管，
-// 后面几个是跟单系统导入员工时带来的老岗位键，留着不把已有的人踢出权限
-const SUPERVISOR_ROLES = ["branch_lead", "r1785125327446", "r1785125333976", "tech_lead", "biz_lead"];
-// 管理员 + 技术主管/业务主管才看得到「管理」页面和「薪资管理」入口，跟服务端 auth.js 的 isManager 保持一致
-const isManager = () => !!me() && (me().role === "admin" || SUPERVISOR_ROLES.indexOf(me().role) >= 0);
-// 跟单系统导员工时带过来的老岗位键，在改成本系统岗位之前，至少别在界面上显示原始键
-const LEGACY_ROLE_LABELS = {
-  sales: "业务员（跟单系统）", follower: "下厂员（跟单系统）",
-  tech_lead: "技术主管（跟单系统）", biz_lead: "业务主管（跟单系统）",
-  r1785125327446: "技术主管（跟单系统）", r1785125333976: "业务主管（跟单系统）"
-};
+// 管理员/主管才看得到「管理」「薪资管理」等入口；名单只在服务端维护（/me 返回 canManage）
+const isManager = () => !!me() && !!me().canManage;
 const roleLabelOf = u => u ? (u.roleLabel || (u.role === "admin" ? "工厂管理员" : "员工")) : "";
 // 员工名单：管理员不算计件工人，考勤录入的选人、管理页的员工表格都不列他们
 const staffUsers = () => (state.users || []).filter(u => u.role !== "admin");
@@ -288,6 +282,7 @@ async function api(method, path, body) {
   if (r.status === 401 && state.token) { A.forceLogout(); throw { error: "登录已失效，请重新登录" }; }
   let j = null; try { j = await r.json(); } catch (e) { }
   if (!r.ok) throw (j || { error: r.status >= 500 ? "服务器开小差了，请稍后再试" : "请求失败" });
+  if (j === null) throw { error: "数据没收全，请检查网络后重试", network: true };
   return j;
 }
 // 执行一个动作 → 重新拉当前页数据 → 重绘；返回 fn() 的结果（成功）或 undefined（失败并已 toast 提示）
@@ -354,7 +349,7 @@ async function loadView(v) {
         todayQty: (scanAll.records || []).reduce((s, r) => s + Number(r.qty || 0), 0),
         monthWage: (paySummary.list || []).reduce((s, r) => s + Number(r.total || 0), 0)
       };
-      state.notif.recent = (await api("GET", "/notifications?limit=5").catch(() => ({ list: [] }))).list || [];
+      state.notif.recent = ((await api("GET", "/notifications").catch(() => ({ list: [] }))).list || []).slice(0, 5);
     } else {
       // 普通员工看自己的：本月完成度(打卡时长/出勤时长)、本月预估工资
       const [eff, pay] = await Promise.all([
@@ -417,7 +412,6 @@ async function loadView(v) {
         styleSizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
         colors: String((st && st.color) || "").split(",").map(x => x.trim()).filter(Boolean),
         sizes: String((st && st.size) || "").split(",").map(x => x.trim()).filter(Boolean),
-        custOpen: false, custKw: "",
         cells: {}, startNo: 1,
         // multiple 默认开：车间的说法是"件数=每张菲票多少件，扎数=打几张菲票"，
         // 关掉是"把总件数按扎数平分"，那是少数情况。
@@ -477,7 +471,8 @@ async function loadView(v) {
       getDailyWage()
     ]);
     state.dailyWage = w.value || 100;
-    const style = (state.styles || []).find((s) => s.id === route.id) || {};
+    if (!state.styles) state.styles = (await api("GET", "/styles")).styles || [];
+    const style = state.styles.find((s) => s.id === route.id) || {};
     state.pe = {
       styleId: route.id,
       mode: (r.list[0] && r.list[0].price_mode) || "default",
@@ -689,6 +684,7 @@ function queuePhoto(ctx, item) {
     if ((photoDraft[ctx] || []).indexOf(item) < 0) return;          // 排队期间被删掉了
     try {
       const data = await compressPhoto(item.file);
+      if ((photoDraft[ctx] || []).indexOf(item) < 0) return;
       const used = draftReady(ctx).reduce((s, p) => s + p.data.length, 0);
       if (used + data.length > IMG_LIMIT) throw { error: "图片总量超出上限，请删掉几张再加", short: "超出上限", fatal: true };
       if (String(item.src).indexOf("blob:") === 0) URL.revokeObjectURL(item.src);
@@ -702,10 +698,19 @@ function queuePhoto(ctx, item) {
   });
   return photoQueue;
 }
+function clearPhotoDraft() {
+  Object.keys(photoDraft).forEach(k => (photoDraft[k] || []).forEach(p => {
+    if (String(p.src).indexOf("blob:") === 0) URL.revokeObjectURL(p.src);
+  }));
+  photoDraft = {};
+}
 function refreshPicker(ctx) { const el = $("pe-" + ctx); if (el) el.innerHTML = pickerInner(ctx); }
 // 拍照和相册拆成两个独立入口：部分手机(尤其华为)系统选择器在 <input multiple> 上会隐藏"拍照"选项
 // (一次拍照只能出一张图，跟多选语义冲突)，只拆开两个按钮才能保证两条路都能用。电脑上没有"拍照"这回事，只留一个。
 function pickerInner(ctx) {
+  if (ctx === "style" && styleForm && styleForm.imagesLocked) {
+    return `<div class="ph-hint">原图没加载出来，图片暂时不能改。<button type="button" class="link-btn" onclick="A.loadStyleImages()">重新加载</button></div>`;
+  }
   const list = photoDraft[ctx] || [];
   const mobile = isMobileDevice();
   const thumbs = list.map((p, i) => `<div class="ph-thumb is-${p.status}">
@@ -731,6 +736,22 @@ function styleImages(s) {
   if ((!imgs || !imgs.length) && s.image) imgs = [s.image];
   return normalizePhotos(imgs);
 }
+// 卡片里的键值格（value 须已转义）与"裁床 → 交货"日期行
+const kv = (k, v) => `<span class="sc-cell"><span class="sc-k">${k}：</span><span class="sc-v">${v}</span></span>`;
+const datesCell = o => `<span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
+  <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>`;
+// 工序进度条那一行
+const progRowHtml = (pct, style) => `<div class="cc-prog"${style ? ` style="${style}"` : ""}>
+  <span class="cc-prog-t">工序进度</span>
+  <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>`;
+// 扎的颜色 / 件数 / 尺码
+const bundleCells = b => kv("颜色", esc(b.color || "—")) + kv("件数", num(b.qty)) + kv("尺码", esc(b.size || "—"));
+// 带款式缩略图的裁床单单头
+function orderHeadHtml(o, cells) {
+  return `<div class="sc-head">${styleThumbHtml(o.style_id, o.style_image)}
+    <div class="sc-info"><div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
+      <div class="sc-grid">${cells}</div></div></div>`;
+}
 // 卡片上的款式缩略图：点开看大图（先用缩略图垫着，原图到了再换上）
 function styleThumbHtml(styleId, src, count, cls) {
   return showable(src)
@@ -754,10 +775,14 @@ function backfillThumbs() {
   const idle = window.requestIdleCallback || (fn => setTimeout(fn, 800));
   idle(async () => {
     for (const s of todo) {
+      const src = s.image;
+      // 列表可能已经刷新过，按最新数据判断还要不要补
+      const cur = (state.styles || []).find(x => x.id === s.id);
+      if (!cur || cur.has_thumb || cur.image !== src) continue;
       try {
-        const t = await makeThumb(s.image);
-        await api("PUT", `/styles/${s.id}/thumb`, { thumb: t });
-        s.image = t; s.has_thumb = true;
+        const t = await makeThumb(src);
+        await api("PUT", `/styles/${s.id}/thumb`, { thumb: t, srcLen: src.length });
+        if (cur.image === src) { cur.image = t; cur.has_thumb = true; }
       } catch (e) { }
       await new Promise(r => setTimeout(r, 80));
     }
@@ -946,7 +971,7 @@ function lbDown(e) {
     const pts = [...V.ptrs.values()], a = pts[0], b = pts[1];
     if (V.page) { V.page = 0; vApplyTrack(); }
     if (V.mode === "drop") { V.s = 1; V.tx = 0; V.ty = 0; vBg(1); }
-    V.mode = "pinch";
+    V.mode = "pinch"; clearTimeout(V.tapTimer); V.tapT = 0;
     V.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     V.st = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: V.mid.x, my: V.mid.y, s: V.s, tx: V.tx, ty: V.ty };
   }
@@ -970,6 +995,7 @@ function lbMove(e) {
   while (V.hist.length > 2 && now - V.hist[0].t > 100) V.hist.shift();
   if (V.mode === "pending") {
     if (Math.hypot(dx, dy) < 8) return;                   // 8px 以内算手抖，不判方向
+    clearTimeout(V.tapTimer); V.tapT = 0;
     V.mode = V.s > 1.01 ? "pan" : Math.abs(dx) > Math.abs(dy) ? "page" : dy > 0 ? "drop" : "pan";
   }
   if (V.mode === "pan") {
@@ -1194,12 +1220,18 @@ const NEEDS_ID = { styleprocs: 1, cutform: 1, cutview: 1, cutprint: 1, cutprogre
 const H = {
   pending: 0, queue: [],
   exec(fn) { if (H.pending) H.queue.push(fn); else fn(); },
-  back() { H.pending++; history.back(); }
+  back() {
+    H.pending++; history.back();
+    clearTimeout(H._t);
+    H._t = setTimeout(() => { if (H.pending) { H.pending = 0; const q = H.queue; H.queue = []; q.forEach(f => f()); } }, 1000);
+  }
 };
 const routeUrl = (v, id) => v === "home" ? "/" : "/" + v + (id ? "/" + encodeURIComponent(id) : "");
 function parseLocation() {
   const parts = location.pathname.replace(/^\/+|\/+$/g, "").split("/");
-  const v = parts[0] || "home", id = parts[1] ? decodeURIComponent(parts[1]) : null;
+  let id = null;
+  try { id = parts[1] ? decodeURIComponent(parts[1]) : null; } catch (e) { }
+  const v = parts[0] || "home";
   if (!VIEW_SET[v]) return { v: "home", id: null };
   if (NEEDS_ID[v] && !id) return { v: SUB_VIEWS[v] || "home", id: null };
   return { v, id };
@@ -1224,6 +1256,12 @@ function formDirty() {
   return !!formSnap.base && formSnap() !== formSnap.base;
 }
 // 重绘前先把款式名/模板名/工序表输入框的值兜回 state，否则重绘会用旧值覆盖用户刚打的字
+// 模板里存的工序条目 → 工序编辑器条目
+const tplItemsToPe = items => items.map((it) => ({
+  name: it.name || "", unitPrice: Number(it.unitPrice) || 0,
+  dailyQuota: it.dailyQuota === undefined ? "" : it.dailyQuota,
+  prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
+}));
 function syncPeForms() { A.syncStyleForm(); A.syncTplName(); A.peSyncNames(); }
 // 防抖搜索框：中文输入法组字时不重绘（会打断输入），停顿后再重绘并把光标定位回原处。
 // apply 先改 state，reload（可选）在重绘前跑一次异步请求，比如按关键词重新拉列表。
@@ -1279,8 +1317,10 @@ function go(v, id, opt) {
   if (!VIEW_SET[v]) { v = "home"; id = null; }
   id = id || null;
   const same = route.v === v && route.id === id, y = window.scrollY;
+  if (state.scan.camOn && v !== "scan") A.stopCamera();
   if (v !== "processes") { state.tplEditing = null; }
-  if (v !== "styles") { styleForm = null; photoDraft = {}; }
+  if (v !== "styles") { styleForm = null; clearPhotoDraft(); }
+  if (!same) Object.keys(state.optUI).forEach(k => { state.optUI[k] = { open: false, kw: "" }; });
   notifPanelOpen = false;
   route = { v, id };
   lightbox = null; renderLightbox();
@@ -1395,6 +1435,12 @@ function deskNotifOverlayHtml() {
 function render() {
   const app = $("app");
   if (showWelcome) { app.innerHTML = vWelcome(); return; }
+  if (!me() && state.token && bootError) {
+    app.innerHTML = `<div class="login-page"><div class="login-inner"><div class="login-brand">
+      <div class="login-logo">${APP_LOGO}</div><h1 class="login-title">${esc(APP_NAME)}</h1></div>
+      ${emptyHtml(bootError + "，请检查网络", "refresh", `<button class="btn" onclick="location.reload()">重新连接</button>`)}</div></div>`;
+    return;
+  }
   if (!me()) { app.innerHTML = vLogin(); return; }
   const meta = pageMeta();
   const views = {
@@ -1544,7 +1590,7 @@ function scanBundleHtml() {
           <video id="scan-cam" class="scan-cam" playsinline muted autoplay></video>
           <div class="scan-frame" aria-hidden="true"><i class="scan-line"></i></div>
           <div class="scan-tools">
-            <button type="button" class="scan-tool" id="scan-torch" hidden onclick="A.toggleTorch()" aria-pressed="false">${icon("torch")}<span>手电筒</span></button>
+            <button type="button" class="scan-tool${A._torchOn ? " on" : ""}" id="scan-torch" ${A._torchCap ? "" : "hidden"} onclick="A.toggleTorch()" aria-pressed="${!!A._torchOn}">${icon("torch")}<span>手电筒</span></button>
             <button type="button" class="scan-tool" onclick="A.stopCamera()">${icon("close")}<span>关闭</span></button>
           </div></div>
         <div class="scan-hint" role="status">${esc(sc.camMsg || "把菲票上的二维码放进框里")}</div>`
@@ -1569,11 +1615,9 @@ function scanBundleHtml() {
         <div class="sc-info">
           <div class="sc-title">扎号 ${b.bundle_no}　菲票 ${b.ticket_no}</div>
           <div class="sc-grid">
-            <span class="sc-cell"><span class="sc-k">款号：</span><span class="sc-v">${esc(sc.bundleOrder.style_code || sc.bundleOrder.style_name || "—")}</span></span>
-            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${sc.bundleOrder.bed_no}</span></span>
-            <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
-            <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
-            <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
+            ${kv("款号", esc(sc.bundleOrder.style_code || sc.bundleOrder.style_name || "—"))}
+            ${kv("床次", sc.bundleOrder.bed_no)}
+            ${bundleCells(b)}
           </div>
         </div>
       </div>
@@ -1712,10 +1756,10 @@ function vStyles() {
           <div class="sc-info">
             <div class="sc-title">款号 ${hl(s.code || "—", kw)}</div>
             <div class="sc-grid">
-              <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${hl(s.name || "—", kw)}</span></span>
-              <span class="sc-cell"><span class="sc-k">工序：</span><span class="sc-v">${num(s.process_count || 0)} 道</span></span>
-              <span class="sc-cell"><span class="sc-k">工价：</span><span class="sc-v">¥${Number(s.total_price || 0).toFixed(4)}</span></span>
-              <span class="sc-cell"><span class="sc-k">是否裁床：</span><span class="sc-v">${s.has_cutting === 0 ? "否" : "是"}</span></span>
+              ${kv("款名", hl(s.name || "—", kw))}
+              ${kv("工序", `${num(s.process_count || 0)} 道`)}
+              ${kv("工价", `¥${Number(s.total_price || 0).toFixed(4)}`)}
+              ${kv("是否裁床", s.has_cutting === 0 ? "否" : "是")}
             </div>
           </div>
           <button class="sc-del" title="删除款式" aria-label="删除款式"
@@ -1744,9 +1788,12 @@ const OPT_META = {
   color: { label: "款式颜色", listKey: "colors", multi: true, ph: "搜索 / 选择颜色" },
   customer: { label: "客户名称", listKey: "customers", multi: false, ph: "搜索 / 选择客户" }
 };
+// 选项控件改的是哪张表单：款式表单，或裁床编菲（只用客户这一项）
+const optForm = () => (route.v === "cutform" ? state.cf : styleForm);
 function optSelected(type) {
-  if (type === "customer") return styleForm.customer ? [styleForm.customer] : [];
-  const map = type === "size" ? styleForm.size : styleForm.color;
+  const f = optForm();
+  if (type === "customer") return f.customer ? [f.customer] : [];
+  const map = type === "size" ? f.size : f.color;
   return Object.keys(map).filter((k) => map[k]);
 }
 function optPickerHtml(type) {
@@ -1761,7 +1808,7 @@ function optPickerHtml(type) {
     <span>${esc(meta.label)}${meta.multi ? "（可多选）" : ""}</span>
     <div class="opt-chips">
       ${sel.length ? sel.map((v) => `<span class="chip on">${esc(v)}<button class="chip-x" type="button"
-          onclick="event.stopPropagation();A.optRemove('${type}','${encodeURIComponent(v)}')" aria-label="移除${esc(v)}">×</button></span>`).join("")
+          onclick="event.stopPropagation();A.optRemove('${type}','${jsArg(v)}')" aria-label="移除${esc(v)}">×</button></span>`).join("")
       : `<span class="row-sub">还没有选${esc(meta.label)}</span>`}
       <button class="chip add" type="button" onclick="A.optOpen('${type}')">＋ 选择</button>
     </div>
@@ -1770,10 +1817,10 @@ function optPickerHtml(type) {
         oninput="A.optSearch('${type}',this.value)" autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
       <div class="opt-list">
         ${cand.length ? cand.map((v) => `<div class="opt-row${sel.includes(v) ? " on" : ""}"
-            onclick="A.optToggle('${type}','${encodeURIComponent(v)}')">
+            onclick="A.optToggle('${type}','${jsArg(v)}')">
             <span class="opt-name">${esc(v)}</span>
             <button class="act-btn danger ghost" type="button"
-              onclick="event.stopPropagation();A.optDeleteOption('${type}','${encodeURIComponent(v)}')">删除</button>
+              onclick="event.stopPropagation();A.optDeleteOption('${type}','${jsArg(v)}')">删除</button>
           </div>`).join("") : `<div class="empty">没有匹配的${esc(meta.label)}</div>`}
         ${kw && !exact ? `<div class="opt-row create" onclick="A.optCreate('${type}')">＋ 新建「${esc(kw)}」</div>` : ""}
       </div>
@@ -1849,7 +1896,7 @@ function procEditorHtml() {
         ${cols.map((c) => `<td class="pe-c-sub" data-label="${esc(mode === "role" ? peRoleLabel(c) : c)}"><input class="in pe-sub" type="number" inputmode="decimal" step="any"
           value="${esc((it.prices && it.prices[c] !== undefined && it.prices[c] !== null) ? it.prices[c] : "")}"
           placeholder="${num(it.unitPrice)}"
-          onchange="A.${mode === "role" ? "peSetRolePrice" : "peSetSizePrice"}(${i},'${encodeURIComponent(c)}',this.value)"></td>`).join("")}
+          onchange="A.peSetSubPrice(${i},'${jsArg(c)}',this.value)"></td>`).join("")}
         <td class="pe-c-show" data-label="显示价格"><button class="sw ${it.showPrice ? "on" : ""}" onclick="A.peToggleShow(${i})"
           aria-label="显示价格" role="switch" aria-checked="${!!it.showPrice}"><i></i></button></td>
         <td class="pe-c-roles" data-label="可见岗位"><button class="act-btn" onclick="A.pePickRoles(${i})">${
@@ -1939,7 +1986,7 @@ function vEfficiency() {
 
   const totalQty = list.reduce((n, x) => n + (Number(x.qty) || 0), 0);
   const totalAtt = list.reduce((n, x) => n + (Number(x.attendanceHours) || 0), 0);
-  const totalEff = list.reduce((n, x) => n + (Number(x.effectiveHours) || 0), 0);
+  const totalEff = rated.reduce((n, x) => n + (Number(x.effectiveHours) || 0), 0);
   const avg = totalAtt > 0 ? totalEff / totalAtt : null;
 
   const card = (x, rank) => {
@@ -2016,40 +2063,10 @@ function cfPickRow(kind) {
     <div class="chips">${all.length ? all.map(v => {
       const on = cur.includes(v);
       return `<button type="button" class="chip ${on ? "on" : ""}"
-        onclick="A.cfToggleAxis('${kind}','${encodeURIComponent(v)}')">${esc(v)}${on ? "" : " ＋"}</button>`;
+        onclick="A.cfToggleAxis('${kind}','${jsArg(v)}')">${esc(v)}${on ? "" : " ＋"}</button>`;
     }).join("")
     : `<span class="row-sub">这个款式还没有选${what}，先去款式管理里给它加上</span>`}</div></div>`;
 }
-// 客户不该让人每张单重打一遍：从已有客户里选，也能当场新建一个存进选项池。
-// 跟款式表单的客户字段用的是同一份 /style-options 数据。
-function cfCustomerPicker() {
-  const cf = state.cf;
-  const all = ((state.styleOptions || {}).customers) || [];
-  const kw = (cf.custKw || "").trim();
-  const cand = rankFilter(all, kw, (v) => [v]);
-  const exact = all.some((v) => normText(v) === normText(kw));
-  return `<div class="field optbox${cf.custOpen ? " open" : ""}"><span>客户</span>
-    <div class="opt-chips">
-      ${cf.customer ? `<span class="chip on">${esc(cf.customer)}<button class="chip-x" type="button"
-          onclick="event.stopPropagation();A.cfSetCustomer('')" aria-label="清除客户">×</button></span>`
-    : `<span class="row-sub">还没有选客户</span>`}
-      <button class="chip add" type="button" onclick="A.cfToggleCust()">＋ 选择</button>
-    </div>
-    ${cf.custOpen ? `<div class="opt-panel">
-      <input class="in opt-search" placeholder="搜索 / 选择客户" value="${esc(cf.custKw || "")}"
-        oninput="A.cfCustSearch(this.value)" autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
-      <div class="opt-list">
-        ${cand.length ? cand.map((v) => `<div class="opt-row${cf.customer === v ? " on" : ""}"
-            onclick="A.cfSetCustomer('${encodeURIComponent(v)}')">
-            <span class="opt-name">${esc(v)}</span></div>`).join("")
-        : `<div class="empty">没有匹配的客户</div>`}
-        ${kw && !exact ? `<div class="opt-row create" onclick="A.cfCustCreate()">＋ 新建「${esc(kw)}」</div>` : ""}
-      </div>
-      <div class="btn-row"><button class="btn ghost mini block" type="button" onclick="A.cfToggleCust()">收起</button></div>
-    </div>` : ""}
-  </div>`;
-}
-
 function cfMatrixHtml() {
   const cf = state.cf;
   if (!cf.colors.length || !cf.sizes.length) return `<div class="empty">先在上面选好颜色和尺码</div>`;
@@ -2062,10 +2079,10 @@ function cfMatrixHtml() {
       ${cf.sizes.map(z => `<td><div class="mx-cell">
         <input class="in num" type="number" inputmode="numeric" placeholder="${cf.multiple ? "每扎件数" : "该格总件数"}"
           value="${esc(cfCell(c, z).input)}"
-          onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','input',this.value)">
+          onchange="A.cfSetCell('${jsArg(c)}','${jsArg(z)}','input',this.value)">
         <input class="in num" type="number" inputmode="numeric" placeholder="菲票张数"
           value="${esc(cfCell(c, z).bundles)}" ${cf.sameBundles ? "disabled" : ""}
-          onchange="A.cfSetCell('${encodeURIComponent(c)}','${encodeURIComponent(z)}','bundles',this.value)">
+          onchange="A.cfSetCell('${jsArg(c)}','${jsArg(z)}','bundles',this.value)">
       </div></td>`).join("")}
       <td class="num">${num(cf.sizes.reduce((t, z) => t + cfCellTotal(c, z), 0))}</td></tr>`).join("")}
     <tr><th class="mx-head">合计</th>${cf.sizes.map(z => `<td class="num">${num(sizeTotal(z))}</td>`).join("")}
@@ -2095,7 +2112,7 @@ function vCutForm() {
           <input class="in" id="cf-bedNo" type="number" inputmode="numeric" value="${esc(cf.bedNo)}"
             placeholder="第几床" onchange="A.cfSet('bedNo',this.value)"></label>
         ${f("制单号", "docNo", "请输入制单号")}
-        ${cfCustomerPicker()}
+        ${optPickerHtml("customer")}
         <label class="field"><span>裁床日期<span class="req">*</span></span>
           ${dateFieldHtml("cf-cutDate", cf.cutDate, "A.cfSet('cutDate',this.value)")}</label>
         <label class="field"><span>发货日期</span>
@@ -2146,20 +2163,8 @@ function vCutView() {
   const maxPer = Math.max(1, ...Object.values(byCell).map(a => a.length));
 
   return `<section class="group"><div class="card style-card">
-      <div class="sc-head">
-        ${styleThumbHtml(o.style_id, o.style_image)}
-        <div class="sc-info">
-          <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
-          <div class="sc-grid">
-            <span class="sc-cell"><span class="sc-k">款名：</span><span class="sc-v">${esc(o.style_name || "—")}</span></span>
-            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
-            <span class="sc-cell"><span class="sc-k">总扎数：</span><span class="sc-v">${num(o.total_bundles)}</span></span>
-            <span class="sc-cell"><span class="sc-k">总件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
-            <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
-              <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
-          </div>
-        </div>
-      </div>
+      ${orderHeadHtml(o, kv("款名", esc(o.style_name || "—")) + kv("床次", o.bed_no)
+        + kv("总扎数", num(o.total_bundles)) + kv("总件数", num(o.total_qty)) + datesCell(o))}
       ${processes.length ? `<div class="sc-procline">
         <span class="sc-k">工序（${processes.length} 道）</span>
         <span class="sc-v">${processes.map(p => esc(p.name) + (p.show_price ? ` ${num(p.unit_price)}元` : "")).join(" · ")}</span>
@@ -2287,23 +2292,9 @@ function vCutProgress() {
   const pct = d.work_percent || 0;                              // 进度条：工序件数进度
   const shipPct = o.total_qty > 0 ? Math.round((d.completed_qty / o.total_qty) * 100) : 0;  // 能出货的件数占比
   return `<section class="group"><div class="card style-card">
-      <div class="sc-head">
-        ${styleThumbHtml(o.style_id, o.style_image)}
-        <div class="sc-info">
-        <div class="sc-title">款号 ${esc(o.style_code || o.style_name || "—")}</div>
-        <div class="sc-grid">
-          <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
-          <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
-          <span class="sc-cell"><span class="sc-k">客户：</span><span class="sc-v">${esc(o.customer || "—")}</span></span>
-          <span class="sc-cell"><span class="sc-k">工序：</span><span class="sc-v">${procs.length} 道</span></span>
-          <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
-            <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
-        </div>
-        </div>
-      </div>
-      <div class="cc-prog">
-        <span class="cc-prog-t">工序进度</span>
-        <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      ${orderHeadHtml(o, kv("床次", o.bed_no) + kv("件数", num(o.total_qty))
+        + kv("客户", esc(o.customer || "—")) + kv("工序", `${procs.length} 道`) + datesCell(o))}
+      ${progRowHtml(pct)}
       <div class="cc-note">已做 ${num(d.work_done)} / ${num(d.work_total)} 工序件
         · 全工序做完 ${num(d.completed_qty)} 件（${shipPct}%）</div>
     </div></section>
@@ -2323,10 +2314,7 @@ function vCutProgress() {
           <div class="row-main">
             <div class="row-label">扎号：${b.bundle_no}</div>
             <div class="sc-grid" style="margin-top:4px">
-              <span class="sc-cell"><span class="sc-k">菲票ID：</span><span class="sc-v">${b.ticket_no}</span></span>
-              <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
-              <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
-              <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
+              ${kv("菲票ID", b.ticket_no)}${bundleCells(b)}
             </div>
             <div class="cc-prog" style="padding:8px 0 0">
               <span class="cc-prog-t">已完成数 ${num(b.done)}</span>
@@ -2351,14 +2339,9 @@ function vBundleProgress() {
       <div class="row-item"><div class="row-main">
         <div class="row-label">扎号：${b.bundle_no}</div>
         <div class="sc-grid" style="margin-top:6px">
-          <span class="sc-cell"><span class="sc-k">菲票号：</span><span class="sc-v">${b.ticket_no}</span></span>
-          <span class="sc-cell"><span class="sc-k">颜色：</span><span class="sc-v">${esc(b.color || "—")}</span></span>
-          <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(b.qty)}</span></span>
-          <span class="sc-cell"><span class="sc-k">尺码：</span><span class="sc-v">${esc(b.size || "—")}</span></span>
+          ${kv("菲票号", b.ticket_no)}${bundleCells(b)}
         </div>
-        <div class="cc-prog" style="padding:10px 0 0">
-          <span class="cc-prog-t">工序进度</span>
-          <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+        ${progRowHtml(pct, "padding:10px 0 0")}
         <div class="cc-note">已做 ${num(d.work_done)} / ${num(d.work_total)} 工序件
           · 整扎做完 ${doneProcs} / ${procs.length} 道 · 全工序做完 ${num(d.done)} 件</div>
       </div></div>
@@ -2425,17 +2408,15 @@ function vCutOrders() {
         <div class="sc-info">
           <div class="sc-title">款号：${esc(o.style_code || o.style_name || "—")}</div>
           <div class="sc-grid">
-            <span class="sc-cell"><span class="sc-k">床次：</span><span class="sc-v">${o.bed_no}</span></span>
-            <span class="sc-cell"><span class="sc-k">件数：</span><span class="sc-v">${num(o.total_qty)}</span></span>
-            <span class="sc-cell"><span class="sc-k">类型：</span><span class="sc-v">${o.source === "self" ? "自建" : esc(o.source)}</span></span>
-            <span class="sc-cell sc-dates"><span class="sc-k">裁床</span><span class="sc-v">${esc(o.cut_date || "—")}</span>
-              <span class="sc-arrow">→</span><span class="sc-k">交货</span><span class="sc-v">${esc(o.ship_date || "—")}</span></span>
+            ${kv("床次", o.bed_no)}
+            ${kv("件数", num(o.total_qty))}
+            ${kv("类型", o.source === "self" ? "自建" : esc(o.source))}
+            ${datesCell(o)}
           </div>
         </div>
         <span class="chev">›</span>
       </div>
-      <div class="cc-prog"><span class="cc-prog-t">工序进度</span>
-        <div class="pbar"><i style="width:${pct}%"></i></div><span class="cc-pct num">${pct}%</span></div>
+      ${progRowHtml(pct)}
       <div class="cc-note">全工序做完 ${num(o.completed_qty)} / ${num(o.total_qty)} 件</div>
       <div class="sc-acts">
         ${isManager() ? `<button onclick="A.coMore('${o.id}')">更多</button>` : ""}
@@ -2526,12 +2507,10 @@ function slogRowHtml(r, withWho) {
 
 function vScanlog() {
   const sl = state.slog, all = sl.records, seeAll = sl.scope === "all";
-  if (all === null) {
-    return `<section class="group"><div class="card">
-      <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
-    </div></section>
-    ${skeletonHtml(4)}`;
-  }
+  const head = `<section class="group"><div class="card">
+    <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
+  </div></section>`;
+  if (all === null) return head + skeletonHtml(4);
   // 人员筛选只列当天真打过点的人，不拉整张员工表——没打点的人摆在这里只会碍事
   const people = [];
   for (const r of all) if (!people.some(x => x.id === r.user_id)) people.push({ id: r.user_id, name: r.user_name });
@@ -2542,10 +2521,7 @@ function vScanlog() {
   const amt = recs.reduce((n, r) => n + (Number(r.amount) || 0), 0);
   const hasAmt = recs.some(r => r.amount !== null && r.amount !== undefined);
 
-  return `<section class="group"><div class="card">
-    <label class="field"><span>日期</span>${dateFieldHtml("sl-date", sl.date, "A.setSlogDate(this.value)")}</label>
-  </div></section>
-
+  return head + `
   <section class="group"><div class="sum-bar">
     <div class="sum-item"><div class="sum-num num">${num(qty)}</div><div class="sum-label">打点件数</div></div>
     <div class="sum-item"><div class="sum-num num">${seeAll && !who ? people.length : recs.length}</div>
@@ -2570,12 +2546,11 @@ function vScanlog() {
 }
 
 /* ---------- 管理（员工账号 + 新增员工，仅管理员/主管可见） ---------- */
-// 下拉的选项 = 本系统的四个岗位；如果这个人当前挂的是跟单系统的老岗位，
-// 把它作为一个带来源说明的选项补在最后，否则下拉里选不中、界面会显示原始键。
-function roleOptionsFor(curRole) {
+// 岗位下拉 = 本系统岗位；这人挂的是跟单系统的老岗位时，用服务端给的中文名补一项，免得选不中
+function roleOptionsFor(u) {
   const opts = (state.roles || []).map((r) => [r.k, r.label]);
-  if (curRole && !opts.some(([k]) => k === curRole)) {
-    opts.push([curRole, LEGACY_ROLE_LABELS[curRole] || (curRole + "（未知岗位）")]);
+  if (u.role && !opts.some(([k]) => k === u.role)) {
+    opts.push([u.role, u.roleLabel && u.roleLabel !== u.role ? u.roleLabel : u.role + "（未知岗位）"]);
   }
   return opts;
 }
@@ -2602,7 +2577,7 @@ function vAdmin() {
           <div class="emp-name">${hl(u.name, kw)}${u.id === me().id ? ` <span class="tag">我</span>` : ""}</div>
           <div class="emp-phone num">${hl(u.phone, kw)}</div>
         </div>
-        <div class="emp-role">${selectHtml("role-" + u.id, roleOptionsFor(u.role), u.role, `A.changeRole('${u.id}',this.value)`)}</div>
+        <div class="emp-role">${selectHtml("role-" + u.id, roleOptionsFor(u), u.role, `A.changeRole('${u.id}',this.value)`)}</div>
         <div class="emp-acts">
           <button class="act-btn" onclick="A.editUser('${u.id}')">编辑</button>
           <button class="act-btn ghost" onclick="A.resetPw('${u.id}')">重置密码</button>
@@ -2908,7 +2883,7 @@ const A = {
     const target = bootTarget || { v: "home", id: null };
     bootTarget = null;
     route = target;
-    if (history.replaceState) history.replaceState({ v: target.v, id: target.id, depth: 0 }, "", routeUrl(target.v, target.id));
+    H.exec(() => history.replaceState({ v: target.v, id: target.id, depth: 0 }, "", routeUrl(target.v, target.id)));
     await Promise.all([loadView(target.v).catch(() => { }), new Promise(r => setTimeout(r, 1200))]);
     showWelcome = false; render();
     startNotifPoll();
@@ -2935,6 +2910,7 @@ const A = {
       state.notif.unread = Math.max(0, state.notif.unread - 1); updateBadges();
       api("POST", `/notifications/${id}/read`).catch(() => { });
     }
+    link = decodeURIComponent(link || "");
     if (link) { const parts = link.replace(/^\//, "").split("/"); go(parts[0], parts[1] || null); }
     else render();
   },
@@ -2989,12 +2965,12 @@ const A = {
     state.att.userId = ""; state.att.records = null;
     state.eff.list = null; state.slog.records = null;
     state.pay.list = state.pay.mine = null; state.pay.editing = "";
-    styleForm = null; photoDraft = {}; state.tplEditing = null;
+    styleForm = null; clearPhotoDraft(); state.tplEditing = null;
     lightbox = null; renderLightbox(); modalState = null; renderModal();
     fullImgCache.clear();
     localStorage.removeItem(TOKEN_KEY);
     route = { v: "home", id: null };
-    if (history.replaceState) history.replaceState({ v: "home", id: null, depth: 0 }, "", "/");
+    H.exec(() => history.replaceState({ v: "home", id: null, depth: 0 }, "", "/"));
     render();
   },
 
@@ -3085,38 +3061,35 @@ const A = {
 
   /* ---- 款式 ---- */
   newStyle() {
-    photoDraft = { style: [] };
+    clearPhotoDraft(); photoDraft.style = [];
     styleForm = { id: "", name: "", code: "", customer: "", size: {}, color: {}, err: {}, origImages: [] };
-    state.pe = { styleId: null, mode: "default", sizes: [], roles: [], items: [] };
+    state.pe = { styleId: null, mode: "default", sizes: [], roles: [], items: [], loaded: true };
     formSnap.base = formSnap();
     render(); window.scrollTo(0, 0);
     // 新建款式也可能要按岗位设可见性，异步把岗位列表补上（普通员工没有权限就留空，不阻塞表单）
     api("GET", "/roles").then(r => { if (state.pe) { state.pe.roles = r.roles || []; render(); } }).catch(() => {});
   },
+  // 编辑款式：工序和原图分开取。工序没取到之前不许提交（否则会用空列表把库里的工序整套覆盖掉）；
+  // 原图没取到时图片区锁住并给"重新加载"，保存时不带图片字段
   async editStyle(id) {
     const s = (state.styles || []).find(x => x.id === id); if (!s) return;
-    // 列表里只有缩略图；原图单独取。取回来之前先按张数摆"加载中"的占位，不让人以为图没了
-    photoDraft = { style: Array.from({ length: s.image_count || 0 }, () => ({ key: "p" + (++photoSeq), src: "", data: "", status: "processing" })) };
     const size = {}, color = {};
     String(s.size || "").split(",").forEach(x => { if (x) size[x] = true; });
     String(s.color || "").split(",").forEach(x => { if (x) color[x] = true; });
-    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, err: {}, origImages: null };
-    state.pe = { styleId: s.id, mode: "default", sizes: String(s.size || "").split(",").filter(Boolean), roles: [], items: [] };
+    clearPhotoDraft();
+    styleForm = { id: s.id, name: s.name, code: s.code || "", customer: s.customer || "", size, color, err: {}, origImages: null, imageCount: s.image_count || 0 };
+    state.pe = { styleId: s.id, mode: "default", sizes: String(s.size || "").split(",").filter(Boolean), roles: [], items: [], loaded: false };
     formSnap.base = null;
+    A.loadStyleImages();
     render(); window.scrollTo(0, 0);
     try {
-      const [r, roleRes, full] = await Promise.all([
+      const [r, roleRes] = await Promise.all([
         api("GET", `/styles/${id}/processes`),
-        api("GET", "/roles").catch(() => ({ roles: [] })),
-        api("GET", `/styles/${id}`)
+        api("GET", "/roles").catch(() => ({ roles: [] }))
       ]);
       if (!styleForm || styleForm.id !== id) return;          // 等的时候已经退出了编辑
-      const imgs = styleImages(full.style || {});
-      cacheFullImgs(id, imgs.filter(showable));
-      styleForm.origImages = imgs;
-      photoDraft.style = imgs.map(photoItem);
       state.pe = {
-        styleId: s.id,
+        styleId: s.id, loaded: true,
         mode: (r.list[0] && r.list[0].price_mode) || "default",
         sizes: String(s.size || "").split(",").filter(Boolean),
         roles: roleRes.roles || [],
@@ -3127,13 +3100,30 @@ const A = {
       };
       formSnap.base = formSnap();
       render();
-    } catch (e) {
-      // 原图没取到：图片区清空并锁住"不改图"，保存时不带图片字段，免得把库里的图覆盖成空
-      if (styleForm && styleForm.id === id && !styleForm.origImages) { photoDraft.style = []; styleForm.imagesLocked = true; }
-      render(); toast((e && e.error) || "款式数据加载失败");
-    }
+    } catch (e) { render(); toast(((e && e.error) || "加载失败") + "，工序没取到，请返回重新打开"); }
   },
-  cancelStyle() { styleForm = null; state.pe = null; photoDraft = {}; formSnap.base = null; render(); },
+  // 取编辑中款式的原图（失败可重试）；取回之前按张数摆占位
+  async loadStyleImages() {
+    const f = styleForm; if (!f || !f.id) return;
+    f.imagesLocked = false;
+    photoDraft.style = Array.from({ length: f.imageCount }, () => ({ key: "p" + (++photoSeq), src: "", data: "", status: "processing" }));
+    refreshPicker("style");
+    try {
+      const full = await api("GET", "/styles/" + f.id);
+      if (styleForm !== f) return;
+      const imgs = styleImages(full.style || {});
+      cacheFullImgs(f.id, imgs.filter(showable));
+      f.origImages = imgs;
+      photoDraft.style = imgs.map(photoItem);
+      if (formSnap.base && state.pe && state.pe.loaded) formSnap.base = formSnap();
+    } catch (e) {
+      if (styleForm !== f) return;
+      photoDraft.style = []; f.imagesLocked = true;
+      toast((e && e.error) || "原图没加载出来");
+    }
+    refreshPicker("style");
+  },
+  cancelStyle() { styleForm = null; state.pe = null; clearPhotoDraft(); formSnap.base = null; render(); },
   // 表单里有多处操作会触发重绘（选尺码/颜色、加工序…），重绘前先把输入框里的内容存回 styleForm
   syncStyleForm() {
     if (!styleForm) return;
@@ -3198,11 +3188,7 @@ const A = {
       // 分码单价要有尺码才能编辑；模板不绑定款式，就把已存过价的尺码列出来
       sizes: [...new Set(t.items.flatMap((it) => Object.keys(it.prices || {})))],
       roles: state.tplRoles || [],
-      items: t.items.map((it) => ({
-        name: it.name || "", unitPrice: Number(it.unitPrice) || 0,
-        dailyQuota: it.dailyQuota === undefined ? "" : it.dailyQuota,
-        prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
-      }))
+      items: tplItemsToPe(t.items)
     };
     formSnap.base = formSnap();
     render();
@@ -3354,6 +3340,7 @@ const A = {
       try {
         const caps = track && track.getCapabilities ? track.getCapabilities() : {};
         if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => { });
+        A._torchCap = !!caps.torch;
         const tb = $("scan-torch"); if (tb && caps.torch) tb.hidden = false;
       } catch (e) { }
 
@@ -3386,10 +3373,13 @@ const A = {
       };
 
       let frame = 0, waited = 0;
+      // 有新帧才解；<video> 被重绘替换后新帧回调不会再来，另挂一个定时器兜底，tick 里的 attach 会把流接回新元素
       const next = (video) => {
         if (A._camSession !== session || !state.scan.camOn) return;
-        if (video && video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => { A._camTimer = setTimeout(tick, detector ? 60 : 90); });
-        else A._camTimer = setTimeout(tick, detector ? 120 : 160);
+        let armed = true;
+        const fire = () => { if (!armed) return; armed = false; clearTimeout(A._camTimer); A._camTimer = setTimeout(tick, detector ? 60 : 90); };
+        if (video && video.requestVideoFrameCallback) video.requestVideoFrameCallback(fire);
+        A._camTimer = setTimeout(fire, 300);
       };
       const tick = async () => {
         if (A._camSession !== session || !state.scan.camOn) return;
@@ -3406,6 +3396,7 @@ const A = {
         try {
           if (detector) {
             const codes = await detector.detect(video);
+            if (A._camSession !== session || !state.scan.camOn) return;   // 等检测结果时摄像头已被关掉
             for (const c of codes) if (hit(c.rawValue)) return;
           } else if (jsQR) {
             const vw = video.videoWidth, vh = video.videoHeight;
@@ -3439,7 +3430,7 @@ const A = {
     A._camSession = (A._camSession || 0) + 1;
     clearTimeout(A._camTimer); A._camTimer = null;
     if (A._camStream) { A._camStream.getTracks().forEach(t => t.stop()); A._camStream = null; }
-    A._torchOn = false;
+    A._torchOn = false; A._torchCap = false;
     state.scan.camOn = false; state.scan.camMsg = ""; render();
   },
   async toggleTorch() {
@@ -3577,29 +3568,6 @@ const A = {
 
   /* ---------- 裁床编菲 ---------- */
   cfSet(k, v) { state.cf[k] = v; },
-  cfToggleCust() { state.cf.custOpen = !state.cf.custOpen; state.cf.custKw = ""; render(); },
-  cfCustSearch(v) {
-    if (A._ime) return;
-    state.cf.custKw = v; render();
-    const el = document.querySelector(".optbox.open .opt-search");
-    if (el) { el.focus(); el.setSelectionRange(v.length, v.length); }
-  },
-  cfSetCustomer(encV) {
-    state.cf.customer = encV ? decodeURIComponent(encV) : "";
-    if (encV) state.cf.custOpen = false;
-    render();
-  },
-  async cfCustCreate() {
-    const value = (state.cf.custKw || "").trim();
-    if (!value) return;
-    try {
-      await api("POST", "/style-options", { type: "customer", value });
-      const o = await api("GET", "/style-options");
-      setStyleOptions(o);
-      state.cf.customer = value; state.cf.custKw = ""; state.cf.custOpen = false;
-      render(); toast("已新增客户");
-    } catch (e) { toast((e && e.error) || "新增失败"); }
-  },
   cfToggleAxis(kind, encV) {
     const v = decodeURIComponent(encV), cf = state.cf;
     const arr = kind === "color" ? cf.colors : cf.sizes;
@@ -3779,15 +3747,17 @@ const A = {
   optToggle(type, encV) {
     const v = decodeURIComponent(encV);
     A.syncStyleForm();
-    if (type === "customer") { styleForm.customer = styleForm.customer === v ? "" : v; state.optUI[type].open = false; }
-    else { const m = type === "size" ? styleForm.size : styleForm.color; if (m[v]) delete m[v]; else m[v] = true; }
+    const f = optForm();
+    if (type === "customer") { f.customer = f.customer === v ? "" : v; state.optUI[type].open = false; }
+    else { const m = type === "size" ? f.size : f.color; if (m[v]) delete m[v]; else m[v] = true; }
     render();
   },
   optRemove(type, encV) {
     const v = decodeURIComponent(encV);
     A.syncStyleForm();
-    if (type === "customer") styleForm.customer = "";
-    else { const m = type === "size" ? styleForm.size : styleForm.color; delete m[v]; }
+    const f = optForm();
+    if (type === "customer") f.customer = "";
+    else delete (type === "size" ? f.size : f.color)[v];
     render();
   },
   async optCreate(type) {
@@ -3798,8 +3768,9 @@ const A = {
       await api("POST", "/style-options", { type, value });
       const o = await api("GET", "/style-options");
       setStyleOptions(o);
-      if (type === "customer") styleForm.customer = value;
-      else (type === "size" ? styleForm.size : styleForm.color)[value] = true;
+      const f = optForm();
+      if (type === "customer") { f.customer = value; state.optUI[type].open = false; }
+      else (type === "size" ? f.size : f.color)[value] = true;
       state.optUI[type].kw = "";
       render(); toast("已新增");
     } catch (e) { toast((e && e.error) || "新增失败"); }
@@ -3812,9 +3783,10 @@ const A = {
       const o = await api("GET", "/style-options");
       setStyleOptions(o);
       // 删掉的选项如果正被这张款式选中，一并清掉，免得留下一个选不到的"幽灵"选中态
-      if (type === "size") delete styleForm.size[value];
-      else if (type === "color") delete styleForm.color[value];
-      else if (styleForm.customer === value) styleForm.customer = "";
+      const f = optForm();
+      if (type === "size") delete f.size[value];
+      else if (type === "color") delete f.color[value];
+      else if (f.customer === value) f.customer = "";
       render(); toast("已删除");
     } catch (e) { toast((e && e.error) || "删除失败"); }
   },
@@ -3829,16 +3801,16 @@ const A = {
   },
   peAdd() { syncPeForms(); state.pe.items.push({ name: "", unitPrice: 0, dailyQuota: "", prices: {}, showPrice: true, visibleRoles: [] }); render(); },
   peDel(i) { syncPeForms(); state.pe.items.splice(i, 1); render(); },
-  // 工序名和工价用的也是 onchange，用户没失焦时 state 还是旧值；重绘前先从 DOM 兜一次。
-  // 跟 peCollect() 是同一件事，抽出来给那些"会触发重绘"的 handler 复用。
+  // 输入框用 onchange，没失焦时 state 还是旧值：重绘或提交前先从 DOM 兜一次
   peSyncNames() {
-    const rows = [...document.querySelectorAll(".pe-tbl tr.pe-row")];
-    rows.forEach((tr, i) => {
+    document.querySelectorAll(".pe-tbl tr.pe-row").forEach((tr, i) => {
       const it = state.pe.items[i]; if (!it) return;
       const nameEl = tr.querySelector(".pe-c-name input");
       if (nameEl) it.name = nameEl.value;
       const priceEl = tr.querySelector(".stepper input");
       if (priceEl) it.unitPrice = Number(priceEl.value) || 0;
+      const quotaEl = tr.querySelector(".pe-quota");
+      if (quotaEl) it.dailyQuota = quotaEl.value === "" ? "" : (Number(quotaEl.value) || 0);
     });
   },
   // 模板名称框没有 onchange，重绘会把它清回旧值；所有触发 render() 的编辑动作先调这个
@@ -3880,12 +3852,12 @@ const A = {
     it.unitPrice = Math.max(0, Math.round(nextK * step * 10000) / 10000);
     render();
   },
-  peSetSizePrice(i, encSize, v) {
+  // 分码 / 分岗单价（prices 按尺码或岗位 key 存）
+  peSetSubPrice(i, encSize, v) {
     const k = decodeURIComponent(encSize), it = state.pe.items[i];
     it.prices = it.prices || {};
     if (v === "") delete it.prices[k]; else it.prices[k] = Number(v) || 0;
   },
-  peSetRolePrice(i, encRole, v) { A.peSetSizePrice(i, encRole, v); },
   peToggleShow(i) { syncPeForms(); state.pe.items[i].showPrice = !state.pe.items[i].showPrice; render(); },
   pePickRoles(i) {
     const it = state.pe.items[i];
@@ -3926,26 +3898,16 @@ const A = {
   peApplyTemplate(id) {
     const t = (state.pe.templates || []).find((x) => x.id === id);
     if (!t) return;
-    state.pe.items = t.items.map((it) => ({
-      name: it.name || "", unitPrice: Number(it.unitPrice) || 0,
-      dailyQuota: it.dailyQuota === undefined ? "" : it.dailyQuota,
-      prices: it.prices || {}, showPrice: it.showPrice !== false, visibleRoles: it.visibleRoles || []
-    }));
+    state.pe.items = tplItemsToPe(t.items);
     A.modalCancel(); render(); toast("已套用模板");
   },
   async peDelTemplate(id) {
     await run(() => api("DELETE", "/process-templates/" + id), "已删除");
     A.pePickTemplate();
   },
-  // 从 DOM 兜一次最新值：工序名/工价用的是 onchange，用户没失焦时 state 里还是旧值
+  // 提交用的工序列表（去掉没填名字的）
   peCollect() {
     A.peSyncNames();
-    const rows = [...document.querySelectorAll(".pe-tbl tr.pe-row")];
-    rows.forEach((tr, i) => {
-      const it = state.pe.items[i]; if (!it) return;
-      const quotaEl = tr.querySelector(".pe-quota");
-      if (quotaEl) it.dailyQuota = quotaEl.value === "" ? "" : (Number(quotaEl.value) || 0);
-    });
     return state.pe.items.filter((it) => String(it.name || "").trim()).map((it) => ({
       name: String(it.name).trim(),
       priceMode: state.pe.mode,
@@ -3975,6 +3937,7 @@ const A = {
         const bad = document.querySelector(".in.bad"); if (bad) { bad.scrollIntoView({ block: "center" }); bad.focus(); }
         return;
       }
+      if (!state.pe || !state.pe.loaded) return toast("工序还没加载出来，不能提交，请返回重新打开");
       const draft = photoDraft.style || [];
       if (draft.some(p => p.status === "processing")) return toast("图片还在处理，请稍等几秒再提交");
       if (draft.some(p => p.status === "error")) return toast("有图片处理失败了，点它重试或者删掉再提交");
@@ -3996,7 +3959,7 @@ const A = {
         state.pe.styleId = styleId;
         await api("PUT", `/styles/${styleId}/processes`, { items: A.peCollect() });
         if (body.images) cacheFullImgs(styleId, images.filter(showable));
-        styleForm = null; state.pe = null; photoDraft = {}; formSnap.base = null;
+        styleForm = null; state.pe = null; clearPhotoDraft(); formSnap.base = null;
         await loadView("styles"); render(); toast("已保存");
       } catch (e) { toast((e && e.error) || "保存失败"); }
     });
@@ -4174,6 +4137,7 @@ document.addEventListener("drop", (e) => {
   if (g) A.addPhotoFiles(g.getAttribute("data-ctx"), [...(e.dataTransfer.files || [])]);
 });
 document.addEventListener("paste", (e) => {
+  if (e.target && e.target.closest && e.target.closest("input,textarea,[contenteditable]")) return;
   const g = document.querySelector(".photos-grid.editable");
   if (!g || !e.clipboardData) return;
   const files = [...(e.clipboardData.files || [])].filter(f => /^image\//.test(f.type));
@@ -4198,6 +4162,7 @@ if ("serviceWorker" in navigator) {
 if ("scrollRestoration" in history) history.scrollRestoration = "manual";   // 滚动位置自己按页面数据加载完再恢复
 
 let bootTarget = null;   // 没登录时从深链接 / 推送进来的目标页，登录后直接去
+let bootError = "";      // 启动时连不上服务器（不是登录失效），显示重试页而不是把人踢回登录
 (async function boot() {
   const target = parseLocation();
   if (history.replaceState) history.replaceState({ v: target.v, id: target.id, depth: 0 }, "", routeUrl(target.v, target.id));
@@ -4206,10 +4171,10 @@ let bootTarget = null;   // 没登录时从深链接 / 推送进来的目标页�
   if (state.token) {
     showWelcome = true; route = target; render();
     const p = api("GET", "/me").then(r => { state.me = r.user; return loadView(target.v).catch(e => { toast((e && e.error) || "加载失败"); }); })
-      .catch(() => { state.token = null; state.me = null; localStorage.removeItem(TOKEN_KEY); });
+      .catch(e => { bootError = (e && e.error) || "连接服务器失败"; });
     await Promise.all([p, new Promise(r => setTimeout(r, 1200))]);
-    if (state.token) startNotifPoll();
-    else { bootTarget = target.v === "home" ? null : target; route = { v: "home", id: null }; }
+    if (state.me) startNotifPoll();
+    else if (!state.token) { bootTarget = target.v === "home" ? null : target; route = { v: "home", id: null }; }
   } else if (target.v !== "home") bootTarget = target;
   showWelcome = false;
   render();

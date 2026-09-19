@@ -52,10 +52,10 @@ function roleLabelWith(roles, roleKey) {
   return LEGACY_ROLE_LABELS[roleKey] || roleKey;
 }
 
-// 给 user 附上岗位中文名，供登录/我的接口用
+// 给 user 附上岗位中文名和管理权限（前端据此显示入口，岗位名单只在后端维护一份）
 async function userPublicFull(u) {
   const roles = await getSetting("roles", []);
-  return Object.assign(A.userPublic(u), { roleLabel: roleLabelWith(roles, u.role) });
+  return Object.assign(A.userPublic(u), { roleLabel: roleLabelWith(roles, u.role), canManage: A.isManager(u) });
 }
 
 router.get("/me", A.authRequired, async (req, res) => res.json({ user: await userPublicFull(req.user) }));
@@ -187,10 +187,9 @@ router.delete("/processes/:id", A.authRequired, async (req, res) => {
 /* ---------------- 款式管理 ---------------- */
 // 列表只带缩略图不带原图（原图 base64 一张两三百KB，否则列表接口几十MB）：
 // image=缩略图或回退原图，has_thumb 标记是否为缩略图，image_count 供点开大图时按需取原图
+// 列表只读缩略图和张数，不碰原图列（原图一张几百 KB，读全表会拖慢整个库）
 const STYLE_LIST_COLS = `s.id, s.name, s.code, s.size, s.color, s.customer, s.has_cutting, s.note, s.created_at,
-      COALESCE(s.thumb, s.image) AS image, (s.thumb IS NOT NULL) AS has_thumb,
-      CASE WHEN JSON_VALID(s.images) AND JSON_LENGTH(s.images) > 0 THEN JSON_LENGTH(s.images)
-           WHEN s.image IS NOT NULL AND s.image <> '' THEN 1 ELSE 0 END AS image_count`;
+      s.thumb AS image, s.image_count`;
 router.get("/styles", A.authRequired, async (req, res) => {
   // 子查询一次带出工序数/总工价，避免按款逐个查（N+1）
   const list = await db.prepare(`
@@ -198,7 +197,9 @@ router.get("/styles", A.authRequired, async (req, res) => {
       (SELECT COUNT(*) FROM jj_style_processes sp WHERE sp.style_id = s.id) AS process_count,
       (SELECT COALESCE(SUM(sp.unit_price), 0) FROM jj_style_processes sp WHERE sp.style_id = s.id) AS total_price
     FROM jj_styles s WHERE s.deleted = 0 ORDER BY s.created_at DESC`).all();
-  res.json({ styles: list.map((s) => Object.assign(s, { has_thumb: !!s.has_thumb, image_count: Number(s.image_count) || 0 })) });
+  list.forEach((s) => { s.has_thumb = !!s.image; });
+  await cutting.fillMissingCovers(list, "id", "image", "image_count");
+  res.json({ styles: list });
 });
 // 单个款式的完整数据（含全部原图）：编辑款式、点开大图时才取
 router.get("/styles/:id", A.authRequired, async (req, res) => {
@@ -208,13 +209,15 @@ router.get("/styles/:id", A.authRequired, async (req, res) => {
 });
 // 缩略图只收 data:image/ 开头、不超过 200KB 的串，免得有人把原图塞进缩略图列、把列表接口又撑大
 const validThumb = (t) => typeof t === "string" && /^data:image\//.test(t) && t.length <= 200 * 1024;
-// 只补缩略图，静默更新（不发通知/不进操作日志），跟改款式分开一个接口
+// 给老款式补缩略图（静默，不发通知/不进操作日志）：只补空的，而且 srcLen 要跟当前封面长度一致，
+// 免得后台补图期间封面被人换了，把旧封面的缩略图写进去
 router.put("/styles/:id/thumb", A.authRequired, async (req, res) => {
-  const thumb = req.body && req.body.thumb;
-  if (!validThumb(thumb)) return res.status(400).json({ error: "缩略图格式不对" });
-  const r = await db.prepare("UPDATE jj_styles SET thumb=? WHERE id=? AND deleted=0 AND image IS NOT NULL AND image <> ''")
-    .run(thumb, req.params.id);
-  if (!r.affectedRows) return res.status(404).json({ error: "款式不存在或没有图片" });
+  const thumb = req.body && req.body.thumb, srcLen = Number(req.body && req.body.srcLen);
+  if (!validThumb(thumb) || !(srcLen > 0)) return res.status(400).json({ error: "缩略图格式不对" });
+  const r = await db.prepare(
+    "UPDATE jj_styles SET thumb=? WHERE id=? AND deleted=0 AND thumb IS NULL AND CHAR_LENGTH(image) = ?")
+    .run(thumb, req.params.id, srcLen);
+  if (!r.affectedRows) return res.status(409).json({ error: "封面已变或已有缩略图" });
   res.json({ ok: true });
 });
 router.post("/styles", A.authRequired, async (req, res) => {
@@ -225,8 +228,9 @@ router.post("/styles", A.authRequired, async (req, res) => {
   const imgs = Array.isArray(images) ? images : [];   // 多图：fileID 数组
   const cover = image || imgs[0] || null;             // 封面 = 传入的 image，或第一张
   // 是否裁床默认为"是"：车间绝大多数款都要裁床，不裁床的是少数（外发/来料）
-  await db.prepare("INSERT INTO jj_styles(id,name,code,image,images,thumb,size,color,customer,has_cutting,note,deleted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?)")
-    .run(id, String(name).trim(), String(code).trim(), cover, JSON.stringify(imgs), cover && validThumb(thumb) ? thumb : null,
+  await db.prepare("INSERT INTO jj_styles(id,name,code,image,images,image_count,thumb,size,color,customer,has_cutting,note,deleted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?)")
+    .run(id, String(name).trim(), String(code).trim(), cover, JSON.stringify(imgs), imgs.length || (cover ? 1 : 0),
+      cover && validThumb(thumb) ? thumb : null,
       size || null, color || null, customer || null, hasCutting === false ? 0 : 1, note || null, Date.now());
   await logOp(req.user.id, `新增款式：${String(name).trim()}`);
   await notifyManagers(`${req.user.name} 新增了款式「${String(name).trim()}」`, "/styles", req.user.id);
@@ -239,10 +243,13 @@ router.patch("/styles/:id", A.authRequired, async (req, res) => {
   const { name, code, image, images, size, color, customer, hasCutting, note, thumb } = body;
   if (name !== undefined) await db.prepare("UPDATE jj_styles SET name=? WHERE id=?").run(String(name).trim(), s.id);
   if (code !== undefined) await db.prepare("UPDATE jj_styles SET code=? WHERE id=?").run(String(code).trim(), s.id);
-  if (image !== undefined) await db.prepare("UPDATE jj_styles SET image=? WHERE id=?").run(image, s.id);
+  if (image !== undefined && images === undefined) {
+    await db.prepare(`UPDATE jj_styles SET image=?, image_count=${image ? "GREATEST(image_count, 1)" : "0"} WHERE id=?`).run(image, s.id);
+  }
   if (images !== undefined) {
     const imgs = Array.isArray(images) ? images : [];
-    await db.prepare("UPDATE jj_styles SET images=?, image=? WHERE id=?").run(JSON.stringify(imgs), imgs[0] || null, s.id);
+    await db.prepare("UPDATE jj_styles SET images=?, image=?, image_count=? WHERE id=?")
+      .run(JSON.stringify(imgs), imgs[0] || null, imgs.length, s.id);
   }
   // 封面一动旧缩略图就失效：带新缩略图就换上，没带就清掉，不留旧封面的缩略图
   if (image !== undefined || images !== undefined) {
@@ -458,12 +465,12 @@ const EFF_HOURS_EXPR = `CASE
     WHEN cop.daily_quota > 0 THEN s.qty * ${STD_WORK_HOURS} / cop.daily_quota
     WHEN p.hour_quota > 0 THEN s.qty * 1.0 / p.hour_quota
     ELSE 0 END`;
+const EFF_FROM = `FROM jj_scan_records s
+    LEFT JOIN jj_cut_order_processes cop ON cop.id = s.order_process_id
+    LEFT JOIN jj_processes p ON p.id = s.process_id`;
 async function effectiveHours(userId, datePattern, exact) {
   const row = await db.prepare(`
-    SELECT COALESCE(SUM(${EFF_HOURS_EXPR}),0) AS eh
-    FROM jj_scan_records s
-    LEFT JOIN jj_cut_order_processes cop ON cop.id = s.order_process_id
-    LEFT JOIN jj_processes p ON p.id = s.process_id
+    SELECT COALESCE(SUM(${EFF_HOURS_EXPR}),0) AS eh ${EFF_FROM}
     WHERE s.user_id = ? AND s.date ${exact ? "=" : "LIKE"} ?`).get(userId, datePattern);
   return row ? row.eh : 0;
 }
@@ -500,10 +507,7 @@ async function monthlyAggByUser(month) {
   const pattern = month + "%";
   const [effRows, qtyRows, attRows] = await Promise.all([
     db.prepare(`
-      SELECT s.user_id, COALESCE(SUM(${EFF_HOURS_EXPR}),0) AS eh
-      FROM jj_scan_records s
-      LEFT JOIN jj_cut_order_processes cop ON cop.id = s.order_process_id
-      LEFT JOIN jj_processes p ON p.id = s.process_id
+      SELECT s.user_id, COALESCE(SUM(${EFF_HOURS_EXPR}),0) AS eh ${EFF_FROM}
       WHERE s.date LIKE ? GROUP BY s.user_id`).all(pattern),
     db.prepare("SELECT user_id, COALESCE(SUM(qty),0) AS q FROM jj_scan_records WHERE date LIKE ? GROUP BY user_id").all(pattern),
     db.prepare("SELECT user_id, COALESCE(SUM(hours),0) AS h FROM jj_attendance WHERE date LIKE ? GROUP BY user_id").all(pattern)
@@ -546,13 +550,14 @@ async function pieceWage(userId, datePattern) {
   `).get(userId, datePattern);
   return row ? row.w : 0;
 }
-async function payrollFor(userId, month) {
-  const wage = await pieceWage(userId, month + "%");
-  const adj = await db.prepare("SELECT * FROM jj_payroll_adjustments WHERE user_id=? AND month=?").get(userId, month);
-  const mealSubsidy = adj ? adj.meal_subsidy : 0;
-  const penalty = adj ? adj.penalty : 0;
-  const bonus = adj ? adj.bonus : 0;
+// 应发 = 计件 + 餐补 + 奖金 - 扣罚（adj 是 jj_payroll_adjustments 的一行，可为空）
+function payTotals(wage, adj) {
+  const mealSubsidy = adj ? adj.meal_subsidy : 0, penalty = adj ? adj.penalty : 0, bonus = adj ? adj.bonus : 0;
   return { pieceWage: wage, mealSubsidy, penalty, bonus, total: wage + mealSubsidy + bonus - penalty };
+}
+async function payrollFor(userId, month) {
+  const adj = await db.prepare("SELECT * FROM jj_payroll_adjustments WHERE user_id=? AND month=?").get(userId, month);
+  return payTotals(await pieceWage(userId, month + "%"), adj);
 }
 
 router.get("/payroll/mine", A.authRequired, async (req, res) => {
@@ -576,14 +581,9 @@ router.get("/payroll/summary", A.authRequired, A.managerRequired, async (req, re
   ]);
   const wageOf = Object.fromEntries(wageRows.map((r) => [r.user_id, Number(r.w) || 0]));
   const adjOf = Object.fromEntries(adjRows.map((r) => [r.user_id, r]));
-  const list = users.map((u) => {
-    const wage = wageOf[u.id] || 0, adj = adjOf[u.id];
-    const mealSubsidy = adj ? adj.meal_subsidy : 0, penalty = adj ? adj.penalty : 0, bonus = adj ? adj.bonus : 0;
-    return {
-      userId: u.id, name: u.name, role: u.role, roleLabel: roleLabelWith(roles, u.role),
-      pieceWage: wage, mealSubsidy, penalty, bonus, total: wage + mealSubsidy + bonus - penalty
-    };
-  });
+  const list = users.map((u) => Object.assign(
+    { userId: u.id, name: u.name, role: u.role, roleLabel: roleLabelWith(roles, u.role) },
+    payTotals(wageOf[u.id] || 0, adjOf[u.id])));
   res.json({ month, list });
 });
 
@@ -597,7 +597,7 @@ router.post("/payroll/adjustments", A.authRequired, A.managerRequired, async (re
   if (!userId || !month) return res.status(400).json({ error: "缺少员工/月份" });
   const old = await db.prepare("SELECT * FROM jj_payroll_adjustments WHERE user_id=? AND month=?").get(userId, month);
   const newVals = { mealSubsidy: Number(mealSubsidy) || 0, penalty: Number(penalty) || 0, bonus: Number(bonus) || 0 };
-  const oldVals = { mealSubsidy: old ? old.meal_subsidy : 0, penalty: old ? old.penalty : 0, bonus: old ? old.bonus : 0 };
+  const oldVals = payTotals(0, old);
   const id = uid();
   await db.prepare(`INSERT INTO jj_payroll_adjustments(id,user_id,month,meal_subsidy,penalty,bonus,note,created_at)
     VALUES(?,?,?,?,?,?,?,?)
@@ -692,19 +692,24 @@ router.get("/style-options", A.authRequired, async (req, res) => {
     customers: await getSetting(STYLE_OPTION_KEYS.customer, [])
   });
 });
-router.post("/style-options", A.authRequired, async (req, res) => {
+// 取出 { type, value } 对应的设置键，参数不对就直接回 400
+function optionKey(req, res) {
   const { type, value } = req.body || {};
   const key = STYLE_OPTION_KEYS[type];
-  if (!key || !value) return res.status(400).json({ error: "参数不对" });
+  if (!key || !value) { res.status(400).json({ error: "参数不对" }); return null; }
+  return { key, value };
+}
+router.post("/style-options", A.authRequired, async (req, res) => {
+  const o = optionKey(req, res); if (!o) return;
+  const { key, value } = o;
   const list = await getSetting(key, []);
   const v = String(value).trim();
   if (v && !list.includes(v)) { list.push(v); await setSetting(key, list); }
   res.json({ list });
 });
 router.delete("/style-options", A.authRequired, async (req, res) => {
-  const { type, value } = req.body || {};
-  const key = STYLE_OPTION_KEYS[type];
-  if (!key || !value) return res.status(400).json({ error: "参数不对" });
+  const o = optionKey(req, res); if (!o) return;
+  const { key, value } = o;
   const list = (await getSetting(key, [])).filter((x) => x !== value);
   await setSetting(key, list);
   res.json({ list });
@@ -856,14 +861,7 @@ router.post("/styles/:id/processes/sync", A.authRequired, A.managerRequired, asy
       // 整套替换（不做增量 diff）：旧打点记录挂在旧 order_process_id 上，替换后进度归零，
       // 这是有意的——工序表换了，旧进度对不上新工序
       await conn.query("DELETE FROM jj_cut_order_processes WHERE order_id = ?", [o.id]);
-      if (sps.length) {
-        await conn.query(
-          `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
-           VALUES ?`,
-          [sps.map((sp, i) => [uid(), o.id, sp.seq || i + 1, sp.name || "工序" + (i + 1),
-            sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
-            sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.daily_quota, sp.id, now])]);
-      }
+      await cutting.insertProcessRows(conn, cutting.styleProcSnapshot(o.id, sps, now));
     }
     await conn.commit();
   } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }

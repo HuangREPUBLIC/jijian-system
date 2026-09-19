@@ -345,10 +345,10 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .login-btn{height:50px;font-size:var(--fs-lg);border-radius:var(--radius);box-shadow:0 8px 20px rgba(106,63,193,.28)}
 
 /* ---------- 中文日期 / 文件选择控件 ---------- */
-.datefield,.filefield{position:relative}
+.datefield{position:relative}
 /* 原生日期框透明盖满按钮直接接收点击（旧 iOS 不支持 showPicker）；
    opacity 取 .011 而不是 0：WebKit 对 opacity:0 的日期框不弹选择器 */
-.date-native{position:absolute;inset:0;width:100%;height:100%;opacity:.011;cursor:pointer;
+.date-native{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;opacity:.011;cursor:pointer;
   border:0;padding:0;margin:0;z-index:1;
   /* 文字和日历图标都设成透明：opacity 不能取 0（WebKit 对 opacity:0 的 date 输入不弹选择器），
      但 .011 的不透明度仍然会让原生的 "yyyy/mm/dd" 占位文字隐隐透出来，压在我们自己的中文上面 */
@@ -360,7 +360,7 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
 .date-btn.is-empty{color:var(--ink-2)}
 
 /* ---------- 弹窗 ---------- */
-.mask{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:var(--z-mask);padding:20px;
+.mask{position:fixed;top:0;right:0;bottom:0;left:0;display:none;align-items:center;justify-content:center;z-index:var(--z-mask);padding:20px;
   background:rgba(0,0,0,.4);background:rgba(0,0,0,calc(.4 * var(--mask-a,1)))}
 .mask.show{display:flex;animation:maskIn 160ms ease}
 .mask.show .modal{animation:modalPop 220ms var(--ease-out)}
@@ -937,7 +937,7 @@ img.sc-thumb:active{transform:scale(.96)}
 .ph-thumb.is-processing img{filter:saturate(.6) brightness(.9)}
 .ph-cover{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(0,0,0,.6));color:#fff;
   font-size:var(--fs-micro);text-align:center;padding:10px 0 3px;pointer-events:none}
-.ph-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+.ph-state{position:absolute;top:0;right:0;bottom:0;left:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
   background:rgba(0,0,0,.38);color:#fff;border:0;font-size:var(--fs-micro);padding:4px;text-align:center;line-height:1.3}
 .ph-state.err{background:rgba(201,39,29,.78);cursor:pointer}
 .ph-state.err b{font-weight:600;text-decoration:underline}
@@ -946,7 +946,7 @@ img.sc-thumb:active{transform:scale(.96)}
 .ph-x{position:absolute;top:3px;right:3px;width:22px;height:22px;border-radius:50%;border:0;padding:0;cursor:pointer;
   background:rgba(0,0,0,.55);color:#fff;display:flex;align-items:center;justify-content:center;z-index:1}
 .ph-x svg{width:12px;height:12px}
-.ph-x::after{content:"";position:absolute;inset:-7px}
+.ph-x::after{content:"";position:absolute;top:-7px;right:-7px;bottom:-7px;left:-7px}
 .ph-add{width:78px;height:78px;border-radius:var(--radius-sm);border:1.5px dashed var(--line-2);background:var(--bg);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;
   color:var(--ink-2);font-size:var(--fs-cap);flex:none;transition:transform 140ms var(--ease-out),border-color 140ms ease}
@@ -961,9 +961,9 @@ img.sc-thumb:active{transform:scale(.96)}
 @media (min-width:768px){ .ph-thumb,.ph-add,.ph-na{width:88px;height:88px} }
 
 /* ---------- 大图查看器（手势在 JS 里，这里只管外观） ---------- */
-.lightbox{position:fixed;inset:0;z-index:var(--z-lb);touch-action:none;overflow:hidden;user-select:none;-webkit-user-select:none;
+.lightbox{position:fixed;top:0;right:0;bottom:0;left:0;z-index:var(--z-lb);touch-action:none;overflow:hidden;user-select:none;-webkit-user-select:none;
   -webkit-touch-callout:none;color:#fff}
-.lb-bg{position:absolute;inset:0;background:#000;opacity:1}
+.lb-bg{position:absolute;top:0;right:0;bottom:0;left:0;background:#000;opacity:1}
 .lightbox:not(.dragging) .lb-bg{transition:opacity 220ms ease}
 .lightbox .lb-track,.lightbox .lb-top,.lightbox .lb-bottom,.lightbox .lb-nav{opacity:0;transition:opacity 200ms ease}
 .lightbox.in .lb-track,.lightbox.in .lb-top,.lightbox.in .lb-bottom,.lightbox.in .lb-nav{opacity:1}
@@ -971,12 +971,12 @@ img.sc-thumb:active{transform:scale(.96)}
 .lightbox.out .lb-bg{opacity:0 !important;transition:opacity 200ms ease}
 .lightbox.out .lb-track{opacity:0;transition:opacity 180ms ease}
 .lightbox.dragging .lb-top,.lightbox.dragging .lb-bottom,.lightbox.dragging .lb-nav{opacity:0}
-.lightbox .lb-track{position:absolute;inset:0;will-change:transform}
-.lb-slide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.lightbox .lb-track{position:absolute;top:0;right:0;bottom:0;left:0;will-change:transform}
+.lb-slide{position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center}
 .lb-frame{position:relative;flex:none;will-change:transform;transform-origin:center center}
 .lightbox.in .lb-slide[data-k="0"] .lb-frame{animation:lbIn 260ms var(--ease-out)}
 @keyframes lbIn{from{opacity:.4;scale:.94}to{opacity:1;scale:1}}
-.lb-frame img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;-webkit-user-drag:none;pointer-events:none}
+.lb-frame img{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;object-fit:contain;-webkit-user-drag:none;pointer-events:none}
 .lb-low{filter:blur(8px);transform:scale(1.02)}
 .lb-slide.full .lb-low{visibility:hidden}
 .lb-slide:not(.full) .lb-img{opacity:0}
@@ -1033,7 +1033,7 @@ img.sc-thumb:active{transform:scale(.96)}
   background:transparent;color:var(--ink-3);display:flex;align-items:center;justify-content:center;cursor:pointer;
   transition:background-color 140ms ease,color 140ms ease}
 .notif-x svg{width:13px;height:13px}
-.notif-x::after{content:"";position:absolute;inset:-8px}
+.notif-x::after{content:"";position:absolute;top:-8px;right:-8px;bottom:-8px;left:-8px}
 .notif-x:hover,.notif-x:focus-visible{background:var(--bad-soft);color:var(--bad-ink)}
 /* 桌面端铃铛面板 */
 .dbell-acts{display:flex;gap:2px}

@@ -20,7 +20,53 @@ const num0 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const jsonParse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } };
 // 裁床单 + 关联款式的常用列组合，多处 SELECT 复用
 const ORDER_WITH_STYLE_COLS = "o.*, s.name AS style_name, s.code AS style_code, COALESCE(s.thumb, s.image) AS style_image";
+// 列表用：只读缩略图，没缩略图的老款式再单独补封面（见 fillMissingCovers）
+const ORDER_LIST_COLS = "o.*, s.name AS style_name, s.code AS style_code, s.thumb AS style_image, s.image_count AS style_image_count";
+// 还没生成缩略图的老款式，列表里退回用封面原图（只查缺的那几个）
+async function fillMissingCovers(rows, styleIdKey, imgKey, countKey) {
+  const ids = [...new Set(rows.filter((r) => !r[imgKey] && r[countKey] > 0).map((r) => r[styleIdKey]))];
+  if (!ids.length) return rows;
+  const covers = await db.prepare(`SELECT id, image FROM jj_styles WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
+  const byId = Object.fromEntries(covers.map((c) => [c.id, c.image]));
+  rows.forEach((r) => { if (!r[imgKey] && byId[r[styleIdKey]]) r[imgKey] = byId[r[styleIdKey]]; });
+  return rows;
+}
 const ORDER_JOIN_STYLE = "FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id";
+// 单头 + 款式信息（alive=false 时连已删的单也取）
+const orderWithStyle = (id, alive = true) => db.prepare(
+  `SELECT ${ORDER_WITH_STYLE_COLS} ${ORDER_JOIN_STYLE} WHERE o.id=?${alive ? " AND o.deleted=0" : ""}`).get(id);
+// 某扎各道工序的已完成件数 { orderProcessId: done }
+async function doneByProcess(bundleId) {
+  const rows = await db.prepare(
+    "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
+    .all(bundleId);
+  return Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
+}
+
+/* ---------------- 建单 / 复制 / 同步工序共用的写入（都在调用方的事务连接里跑） ---------------- */
+async function insertOrder(conn, o) {
+  await conn.query(
+    `INSERT INTO jj_cut_orders(id,style_id,bed_no,doc_no,customer,cut_date,ship_date,order_no,
+      bed_note,ticket_note,company_name,colors,sizes,total_bundles,total_qty,source,created_by,created_at,deleted)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'self',?,?,0)`,
+    [o.id, o.style_id, o.bed_no, o.doc_no, o.customer, o.cut_date, o.ship_date, o.order_no,
+      o.bed_note, o.ticket_note, o.company_name, o.colors, o.sizes, o.total_bundles, o.total_qty, o.created_by, o.created_at]);
+}
+async function insertBundleRows(conn, rows) {
+  if (!rows.length) return;
+  await conn.query(
+    "INSERT INTO jj_cut_bundles(id,order_id,style_id,bundle_no,ticket_no,color,size,qty,vat_no,note,created_at) VALUES ?", [rows]);
+}
+async function insertProcessRows(conn, rows) {
+  if (!rows.length) return;
+  await conn.query(
+    `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
+     VALUES ?`, [rows]);
+}
+// 款式工序 → 裁床单工序快照（改款式工序不影响已建的单，要生效得走「同步工序」）
+const styleProcSnapshot = (orderId, sps, now) => sps.map((sp, i) => [uid(), orderId, sp.seq || i + 1, sp.name || "工序" + (i + 1),
+  sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
+  sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.daily_quota, sp.id, now]);
 
 // 操作日志文案用："款号 床次N" 这种口径，跟旧版裁床单日志风格对齐
 async function styleLabelOf(styleId) {
@@ -153,32 +199,17 @@ router.post("/cut-orders", A.authRequired, A.managerRequired, async (req, res) =
     await conn.beginTransaction();
     const startTicket = await nextTicketRange(conn, plan.totalBundles);
 
-    await conn.query(
-      `INSERT INTO jj_cut_orders(id,style_id,bed_no,doc_no,customer,cut_date,ship_date,order_no,
-        bed_note,ticket_note,company_name,colors,sizes,total_bundles,total_qty,source,created_by,created_at,deleted)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
-      [orderId, style.id, bedNo, b.docNo || null, b.customer || null, b.cutDate, b.shipDate || null,
-        b.orderNo || null, b.bedNote || null, b.ticketNote || null, b.companyName || null,
-        JSON.stringify(colors), JSON.stringify(sizes), plan.totalBundles, plan.totalQty,
-        "self", req.user.id, now]);
-
-    await conn.query(
-      `INSERT INTO jj_cut_bundles(id,order_id,style_id,bundle_no,ticket_no,color,size,qty,vat_no,note,created_at)
-       VALUES ?`,
-      [plan.bundles.map((x, i) =>
-        [uid(), orderId, style.id, x.bundleNo, startTicket + i, x.color, x.size, x.qty, x.vatNo, null, now])]);
-
-    // 工序快照：改款式工序不影响已建的单，要生效得走「同步工序」
-    const [spRows] = await conn.query(
-      "SELECT * FROM jj_style_processes WHERE style_id = ? ORDER BY seq ASC", [style.id]);
-    if (spRows.length) {
-      await conn.query(
-        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
-         VALUES ?`,
-        [spRows.map((sp, i) => [uid(), orderId, sp.seq || i + 1, sp.name || "工序" + (i + 1),
-          sp.price_mode || "default", Number(sp.unit_price) || 0, sp.prices || null,
-          sp.show_price === 0 ? 0 : 1, sp.visible_roles || null, sp.daily_quota, sp.id, now])]);
-    }
+    await insertOrder(conn, {
+      id: orderId, style_id: style.id, bed_no: bedNo, doc_no: b.docNo || null, customer: b.customer || null,
+      cut_date: b.cutDate, ship_date: b.shipDate || null, order_no: b.orderNo || null, bed_note: b.bedNote || null,
+      ticket_note: b.ticketNote || null, company_name: b.companyName || null,
+      colors: JSON.stringify(colors), sizes: JSON.stringify(sizes),
+      total_bundles: plan.totalBundles, total_qty: plan.totalQty, created_by: req.user.id, created_at: now
+    });
+    await insertBundleRows(conn, plan.bundles.map((x, i) =>
+      [uid(), orderId, style.id, x.bundleNo, startTicket + i, x.color, x.size, x.qty, x.vatNo, null, now]));
+    const [spRows] = await conn.query("SELECT * FROM jj_style_processes WHERE style_id = ? ORDER BY seq ASC", [style.id]);
+    await insertProcessRows(conn, styleProcSnapshot(orderId, spRows, now));
     await conn.commit();
   } catch (e) {
     await conn.rollback();
@@ -214,9 +245,10 @@ router.get("/cut-orders", A.authRequired, async (req, res) => {
     args.push(`%${kw}%`, `%${kw}%`, Number(kw) || -1, `%${kw}%`);
   }
   const tail = `${ORDER_JOIN_STYLE} WHERE ${where.join(" AND ")}`;
-  const rows = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${tail} ORDER BY o.cut_date DESC, o.created_at DESC LIMIT ${limit} OFFSET ${offset}`).all(...args);
+  const rows = await fillMissingCovers(await db.prepare(
+    `SELECT ${ORDER_LIST_COLS}
+     ${tail} ORDER BY o.cut_date DESC, o.created_at DESC LIMIT ${limit} OFFSET ${offset}`).all(...args),
+  "style_id", "style_image", "style_image_count");
   const total = (await db.prepare(`SELECT COUNT(*) c ${tail}`).get(...args)).c;
   const prog = await progressByOrders(rows.map((r) => r.id));
   res.json({ list: rows.map((r) => {
@@ -227,9 +259,7 @@ router.get("/cut-orders", A.authRequired, async (req, res) => {
 
 /* ---------------- 详情 ---------------- */
 router.get("/cut-orders/:id", A.authRequired, async (req, res) => {
-  const order = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+  const order = await orderWithStyle(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
   let processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
@@ -287,28 +317,13 @@ router.post("/cut-orders/:id/copy", A.authRequired, A.managerRequired, async (re
     await conn.beginTransaction();
     // 菲票号必须重取：复制出来的是另一批实体票，跟原单的票不能同号
     const startTicket = await nextTicketRange(conn, srcBundles.length);
-    await conn.query(
-      `INSERT INTO jj_cut_orders(id,style_id,bed_no,doc_no,customer,cut_date,ship_date,order_no,
-        bed_note,ticket_note,company_name,colors,sizes,total_bundles,total_qty,source,created_by,created_at,deleted)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
-      [newId, src.style_id, bedNo, src.doc_no, src.customer,
-        (req.body && req.body.cutDate) || src.cut_date, src.ship_date, src.order_no,
-        src.bed_note, src.ticket_note, src.company_name, src.colors, src.sizes,
-        src.total_bundles, src.total_qty, "self", req.user.id, now]);
-    if (srcBundles.length) {
-      await conn.query(
-        `INSERT INTO jj_cut_bundles(id,order_id,style_id,bundle_no,ticket_no,color,size,qty,vat_no,note,created_at)
-         VALUES ?`,
-        [srcBundles.map((b, i) => [uid(), newId, b.style_id, b.bundle_no, startTicket + i,
-          b.color, b.size, b.qty, b.vat_no, b.note, now])]);
-    }
-    if (srcProcs.length) {
-      await conn.query(
-        `INSERT INTO jj_cut_order_processes(id,order_id,seq,name,price_mode,unit_price,prices,show_price,visible_roles,daily_quota,style_process_id,created_at)
-         VALUES ?`,
-        [srcProcs.map((p) => [uid(), newId, p.seq, p.name, p.price_mode, p.unit_price,
-          p.prices, p.show_price, p.visible_roles, p.daily_quota, p.style_process_id, now])]);
-    }
+    await insertOrder(conn, Object.assign({}, src, {
+      id: newId, bed_no: bedNo, cut_date: (req.body && req.body.cutDate) || src.cut_date, created_by: req.user.id, created_at: now
+    }));
+    await insertBundleRows(conn, srcBundles.map((b, i) => [uid(), newId, b.style_id, b.bundle_no, startTicket + i,
+      b.color, b.size, b.qty, b.vat_no, b.note, now]));
+    await insertProcessRows(conn, srcProcs.map((p) => [uid(), newId, p.seq, p.name, p.price_mode, p.unit_price,
+      p.prices, p.show_price, p.visible_roles, p.daily_quota, p.style_process_id, now]));
     await conn.commit();
   } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
 
@@ -335,9 +350,7 @@ router.delete("/cut-orders/:id", A.authRequired, A.managerRequired, async (req, 
 
 /* ---------------- 生产进度：按扎 ---------------- */
 router.get("/cut-orders/:id/progress", A.authRequired, async (req, res) => {
-  const order = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+  const order = await orderWithStyle(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(order.id);
   const bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
@@ -405,14 +418,9 @@ router.get("/cut-orders/:id/process-progress", A.authRequired, async (req, res) 
 router.get("/bundles/:id", A.authRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE id=?").get(req.params.id);
   if (!bundle) return res.status(404).json({ error: "菲票不存在" });
-  const order = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${ORDER_JOIN_STYLE} WHERE o.id=?`).get(bundle.order_id);
+  const order = await orderWithStyle(bundle.order_id, false);
   const processes = await db.prepare("SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
-  const rows = await db.prepare(
-    "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
-    .all(bundle.id);
-  const doneOf = Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
+  const doneOf = await doneByProcess(bundle.id);
   const pids = processes.map((p) => p.id);
   const workDone = bundleWorkDone(pids, doneOf, bundle.qty);
   const workTotal = bundle.qty * pids.length;
@@ -433,16 +441,11 @@ router.get("/bundles/:id", A.authRequired, async (req, res) => {
 router.get("/bundles/by-ticket/:ticketNo", A.authRequired, async (req, res) => {
   const bundle = await db.prepare("SELECT * FROM jj_cut_bundles WHERE ticket_no = ?").get(Number(req.params.ticketNo));
   if (!bundle) return res.status(404).json({ error: "找不到这张菲票" });
-  const order = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(bundle.order_id);
+  const order = await orderWithStyle(bundle.order_id);
   if (!order) return res.status(400).json({ error: "这张菲票所属的裁床单已删除" });
   const processes = await db.prepare(
     "SELECT * FROM jj_cut_order_processes WHERE order_id=? ORDER BY seq ASC").all(bundle.order_id);
-  const rows = await db.prepare(
-    "SELECT order_process_id, COALESCE(SUM(qty),0) AS done FROM jj_scan_records WHERE bundle_id=? GROUP BY order_process_id")
-    .all(bundle.id);
-  const doneOf = Object.fromEntries(rows.map((r) => [r.order_process_id, Number(r.done) || 0]));
+  const doneOf = await doneByProcess(bundle.id);
   // 工价对普通工人按 show_price / visible_roles 剥掉，跟裁床单详情一个口径
   const mgr = A.isManager(req.user);
   res.json({ bundle, order, processes: processes.map((p) => ({
@@ -562,7 +565,7 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
   if (to) { where.push("o.cut_date <= ?"); args.push(to); }
   if (kw) { where.push("(s.code LIKE ? OR s.name LIKE ?)"); args.push(`%${kw}%`, `%${kw}%`); }
   const rows = await db.prepare(`
-    SELECT o.style_id, s.name AS style_name, s.code AS style_code, COALESCE(s.thumb, s.image) AS style_image,
+    SELECT o.style_id, s.name AS style_name, s.code AS style_code,
            COUNT(*) AS sheet_count, COALESCE(SUM(o.total_qty),0) AS total_qty
     FROM jj_cut_orders o JOIN jj_styles s ON s.id = o.style_id
     WHERE ${where.join(" AND ")} GROUP BY o.style_id ORDER BY total_qty DESC`).all(...args);
@@ -578,9 +581,7 @@ router.get("/production/by-style", A.authRequired, async (req, res) => {
 // 不服务端直出打印页：鉴权是 Bearer token，window.open 新窗口带不上，会 401。
 // 这里只给数据+二维码，前端渲染到 #print-root 再 window.print()
 router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, async (req, res) => {
-  const order = await db.prepare(
-    `SELECT ${ORDER_WITH_STYLE_COLS}
-     ${ORDER_JOIN_STYLE} WHERE o.id=? AND o.deleted=0`).get(req.params.id);
+  const order = await orderWithStyle(req.params.id);
   if (!order) return res.status(404).json({ error: "裁床单不存在" });
 
   let bundles = await db.prepare("SELECT * FROM jj_cut_bundles WHERE order_id=? ORDER BY bundle_no ASC").all(order.id);
@@ -609,4 +610,4 @@ router.get("/cut-orders/:id/print-data", A.authRequired, A.managerRequired, asyn
   res.json({ order, processes, bundles: withQr });
 });
 
-module.exports = { router, completedByOrder, progressByOrders, nextTicketRange };
+module.exports = { router, completedByOrder, progressByOrders, nextTicketRange, insertProcessRows, styleProcSnapshot, fillMissingCovers };
