@@ -3,7 +3,7 @@
 
 图形是一张菲票：上联印二维码，下联撕下来歪在一边 —— 扫菲、撕联、计一件。
 底色是本系统专属的葡萄紫（跟单是蓝、报销是绿），跟 CSS 的 --violet 一致。
-页面里内嵌的 logo（public/index.html 启动页、public/app.js 的 APP_LOGO）用的是同一段图形，改图形时三处一起改。
+页面里内嵌的 logo（public/index.html 启动页、public/js/brand.js 的 APP_LOGO）用的是同一段图形，改图形时三处一起改。
 改完跑一次：python3 scripts/make_icons.py（需要 Pillow）
 """
 import os

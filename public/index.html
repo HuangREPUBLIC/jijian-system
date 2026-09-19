@@ -47,7 +47,38 @@
     document.addEventListener("gesturestart", function (e) { e.preventDefault(); }, { passive: false });
     document.addEventListener("dblclick", function (e) { e.preventDefault(); }, { passive: false });
   </script>
-  <script src="/app.js"></script>
+  <!-- 前端代码按功能拆在 /js/ 下，顺序不能乱：util → brand → state → 通用件 → 各功能 → boot 最后（说明见 docs/前端结构.md） -->
+  <script src="/js/util.js"></script>
+  <script src="/js/brand.js"></script>
+  <script src="/js/state.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/parts.js"></script>
+  <script src="/js/photos.js"></script>
+  <script src="/js/viewer.js"></script>
+  <script src="/js/router.js"></script>
+  <script src="/js/shell.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/home.js"></script>
+  <script src="/js/scan.js"></script>
+  <script src="/js/notifs.js"></script>
+  <script src="/js/processes.js"></script>
+  <script src="/js/proc_editor.js"></script>
+  <script src="/js/styles.js"></script>
+  <script src="/js/style_options.js"></script>
+  <script src="/js/cut_form.js"></script>
+  <script src="/js/cut_orders.js"></script>
+  <script src="/js/cut_print.js"></script>
+  <script src="/js/cut_progress.js"></script>
+  <script src="/js/attendance.js"></script>
+  <script src="/js/efficiency.js"></script>
+  <script src="/js/scanlog.js"></script>
+  <script src="/js/admin.js"></script>
+  <script src="/js/payroll.js"></script>
+  <script src="/js/mine.js"></script>
+  <script src="/js/pull_refresh.js"></script>
+  <script src="/js/pwa.js"></script>
+  <script src="/js/boot.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", function () {

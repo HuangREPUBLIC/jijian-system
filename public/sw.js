@@ -1,7 +1,14 @@
 // 改了前端就把版本号 +1，旧缓存会被丢弃
-const CACHE = "jijian-v7";
-const SHELL = ["/", "/index.html", "/app.js", "/styles.css",
-  "/jsQR.js", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
+const CACHE = "jijian-v8";
+const SHELL = [
+  "/", "/index.html", "/styles.css", "/js/util.js", "/js/brand.js", "/js/state.js", "/js/api.js",
+  "/js/ui.js", "/js/parts.js", "/js/photos.js", "/js/viewer.js", "/js/router.js", "/js/shell.js",
+  "/js/auth.js", "/js/home.js", "/js/scan.js", "/js/notifs.js", "/js/processes.js", "/js/proc_editor.js",
+  "/js/styles.js", "/js/style_options.js", "/js/cut_form.js", "/js/cut_orders.js", "/js/cut_print.js",
+  "/js/cut_progress.js", "/js/attendance.js", "/js/efficiency.js", "/js/scanlog.js", "/js/admin.js",
+  "/js/payroll.js", "/js/mine.js", "/js/pull_refresh.js", "/js/pwa.js", "/js/boot.js", "/jsQR.js",
+  "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"
+];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
