@@ -1,5 +1,5 @@
 // 改了前端就把版本号 +1，旧缓存会被丢弃
-const CACHE = "jijian-v8";
+const CACHE = "jijian-v9";
 const SHELL = [
   "/", "/index.html", "/styles.css", "/js/util.js", "/js/brand.js", "/js/state.js", "/js/api.js",
   "/js/ui.js", "/js/parts.js", "/js/photos.js", "/js/viewer.js", "/js/router.js", "/js/shell.js",

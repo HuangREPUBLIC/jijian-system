@@ -37,16 +37,21 @@ function optPickerHtml(type) {
       <button class="chip add" type="button" onclick="A.optOpen('${type}')">＋ 选择</button>
     </div>
     ${ui.open ? `<div class="opt-panel">
-      <input class="in opt-search" placeholder="${esc(meta.ph)}" value="${esc(ui.kw)}"
-        oninput="A.optSearch('${type}',this.value)" autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
+      <div class="opt-add-row">
+        <input class="in opt-search" placeholder="${esc(meta.ph)}" value="${esc(ui.kw)}"
+          oninput="A.optSearch('${type}',this.value)" onkeydown="if(event.key==='Enter'&&!A._ime){event.preventDefault();A.optCreate('${type}')}"
+          autocomplete="off" enterkeyhint="done" ${IME_ATTRS}>
+        <button class="btn mini" type="button" onclick="A.optCreate('${type}')"
+          ${kw && !exact ? "" : "disabled"}>＋ 新增</button>
+      </div>
       <div class="opt-list">
         ${cand.length ? cand.map((v) => `<div class="opt-row${sel.includes(v) ? " on" : ""}"
             onclick="A.optToggle('${type}','${jsArg(v)}')">
             <span class="opt-name">${esc(v)}</span>
             <button class="act-btn danger ghost" type="button"
               onclick="event.stopPropagation();A.optDeleteOption('${type}','${jsArg(v)}')">删除</button>
-          </div>`).join("") : `<div class="empty">没有匹配的${esc(meta.label)}</div>`}
-        ${kw && !exact ? `<div class="opt-row create" onclick="A.optCreate('${type}')">＋ 新建「${esc(kw)}」</div>` : ""}
+          </div>`).join("") : `<div class="empty">${kw ? "没有匹配的" + esc(meta.label) + "，可直接新增" : "还没有" + esc(meta.label) + "，输入名称后点「新增」"}</div>`}
+        ${kw && !exact ? `<div class="opt-row create" onclick="A.optCreate('${type}')">＋ 新增「${esc(kw)}」</div>` : ""}
       </div>
       <div class="btn-row"><button class="btn ghost mini block" type="button" onclick="A.optOpen('${type}')">收起</button></div>
     </div>` : ""}
@@ -81,7 +86,10 @@ Object.assign(A, {
   },
   async optCreate(type) {
     const value = (state.optUI[type].kw || "").trim();
-    if (!value) return;
+    if (!value) return toast("请先输入要新增的名称");
+    // 已有同名选项：不重复新增，直接选中
+    const all = (state.styleOptions || {})[OPT_META[type].listKey] || [];
+    if (all.some((v) => normText(v) === normText(value))) return toast("已有同名选项，直接点它即可");
     A.syncStyleForm();
     try {
       await api("POST", "/style-options", { type, value });
