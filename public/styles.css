@@ -151,7 +151,7 @@ select.in{appearance:none;-webkit-appearance:none;
 .btn.danger{background:var(--bad);color:#fff}
 .btn.danger.ghost{background:var(--card-2);color:var(--bad-ink)}
 .btn.danger.ghost:active{background:var(--bad-soft)}
-.btn:disabled{opacity:.4}
+.btn:disabled{opacity:.4;cursor:default}
 .btn:focus-visible,.nav-btn:focus-visible,.tab:focus-visible{outline:2.5px solid var(--violet-2);outline-offset:2px}
 
 /* 行内小动作按钮 */
@@ -299,18 +299,34 @@ mark{background:rgba(255,196,0,.32);color:inherit;border-radius:3px;padding:0 1p
   font-size:15px;line-height:1;padding:0 2px;cursor:pointer}
 /* "＋ 选择"是这个控件唯一的入口，必须一眼看得见：文字用可读的 --violet-2，不用装饰色 --ink-3 */
 .chip.add{border-style:dashed;color:var(--violet-2)}
-.opt-panel{margin-top:8px;border:1px solid var(--line);border-radius:calc(var(--radius) - 4px);
-  background:var(--card);box-shadow:var(--shadow);padding:8px}
-.opt-add-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+/* 同心圆角：面板内边距 6px + 内部控件 10px = 面板 16px，内外圈看着才是一套。
+   原来面板 8px 比里面的输入框 10px 还方，内层反而更圆，是反的 */
+.opt-panel{margin-top:8px;border:1px solid var(--line);border-radius:var(--radius-lg);
+  background:var(--card);box-shadow:var(--shadow);padding:6px;
+  animation:popIn 180ms var(--ease-out);transform-origin:top}
+.opt-add-row{display:flex;gap:8px;align-items:center}
 .opt-add-row .opt-search{flex:1;min-width:0}
-.opt-add-row .btn{flex:none}
-.opt-list{max-height:240px;overflow-y:auto}
+/* 「＋ 新增」要跟搜索框同高（42px），否则在行里浮着；42px 也够最小点按区 */
+.opt-add-row .btn{flex:none;min-height:42px;padding:0 14px}
+/* 按钮为什么点不了，得写在按钮底下，不能只靠置灰。
+   左边距 12px 对齐搜索框里的文字起点（.in 的左内边距），不然这行字看着往左溜 */
+.opt-hint{margin:6px 12px 0;font-size:var(--fs-cap);color:var(--ink-2);line-height:1.45;text-wrap:pretty}
+/* 列表滚动时底部压一道渐隐，提示"下面还有"；跟 .tbl-wrap 横向那道是同一个手法
+   （background-attachment:local 的底图跟着内容滚，scroll 的那层固定在容器上） */
+.opt-list{max-height:240px;overflow-y:auto;margin-top:6px;
+  background:linear-gradient(var(--card) 30%,transparent) 0 0,
+    linear-gradient(transparent,var(--card) 70%) 0 100%,
+    radial-gradient(farthest-side at 50% 100%,rgba(0,0,0,.10),transparent) 0 100%;
+  background-repeat:no-repeat;background-size:100% 24px,100% 24px,100% 8px;
+  background-attachment:local,local,scroll}
 .opt-row{display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:9px 8px;border-radius:var(--radius-sm);cursor:pointer;min-height:40px}
-.opt-row:hover{background:var(--card-2)}
 /* 高亮文字用 --violet-2（两套主题分别调过对比度），--brand 只给背景/描边用 */
 .opt-row.on .opt-name{color:var(--violet-2);font-weight:600}
-.opt-row.create{color:var(--violet-2)}
+/* 面板才 240px 高，通用空状态那套 30px 内边距塞不下 */
+.opt-empty{padding:18px 12px;margin:0;text-wrap:pretty}
+/* 「收起」要跟列表左右对齐：通用 .btn-row 的 14px/16px 内边距在 6px 的面板里会缩进太多 */
+.opt-panel .btn-row{padding:6px 0 0}
 
 /* ---------- 表格 ---------- */
 /* 宽表格左右可滑时，右边给一道阴影提示"后面还有" */
@@ -866,7 +882,8 @@ table.tbl{border-collapse:collapse;width:100%;font-size:var(--fs-body);min-width
   .btn.ghost:hover{background:var(--lilac-soft)}
   .act-btn:hover{filter:brightness(.97)}
   .tool:hover{background:var(--lilac-soft)}
-  .row-item.tap:hover,.tpl-head:hover,.cc-head:hover{background:var(--bg)}
+  /* .opt-row 原来 hover 成 --card-2，浅色模式下跟面板底色都是 #FFF，等于没有悬停态 */
+  .row-item.tap:hover,.tpl-head:hover,.cc-head:hover,.opt-row:hover{background:var(--bg)}
   .sc-acts button:hover{border-color:var(--violet-2);color:var(--violet-2)}
   .chip:hover{border-color:var(--violet-2)}
   .link-btn:not(:disabled):hover{background:var(--lilac-soft)}
